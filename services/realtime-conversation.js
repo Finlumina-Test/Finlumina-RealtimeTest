@@ -1,11 +1,8 @@
 // services/realtime-conversation.js
-import WebSocket from "ws";
-import OpenAI from "openai";
+import { WebSocketServer } from "ws";
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-export default function setupRealtime(server) {
-  const wss = new WebSocket.Server({ noServer: true });
+export function setupRealtime(server) {
+  const wss = new WebSocketServer({ noServer: true });
 
   server.on("upgrade", (req, socket, head) => {
     if (req.url === "/realtime-conversation") {
@@ -18,9 +15,9 @@ export default function setupRealtime(server) {
   wss.on("connection", async (twilioWs) => {
     console.log("📞 Twilio stream connected");
 
-    // Connect to OpenAI Realtime API
+    // Connect to OpenAI Realtime API (with audio output enabled)
     const openaiWs = new WebSocket(
-      "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12",
+      "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12&voice=verse",
       {
         headers: {
           Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
@@ -47,23 +44,17 @@ export default function setupRealtime(server) {
       const data = JSON.parse(msg.toString());
 
       if (data.event === "media" && data.media.payload) {
-        const audioB64 = data.media.payload;
         const payload = JSON.stringify({
           type: "input_audio_buffer.append",
-          audio: audioB64,
+          audio: data.media.payload,
         });
-
-        if (openaiReady) {
-          openaiWs.send(payload);
-        } else {
-          messageQueue.push(payload);
-        }
+        if (openaiReady) openaiWs.send(payload);
+        else messageQueue.push(payload);
       }
 
       if (data.event === "stop") {
         const commit = JSON.stringify({ type: "input_audio_buffer.commit" });
         const create = JSON.stringify({ type: "response.create" });
-
         if (openaiReady) {
           openaiWs.send(commit);
           openaiWs.send(create);
@@ -73,9 +64,21 @@ export default function setupRealtime(server) {
       }
     });
 
-    // OpenAI → logs
+    // OpenAI → Twilio
     openaiWs.on("message", (raw) => {
       const event = JSON.parse(raw.toString());
+
+      // Forward GPT audio to Twilio
+      if (event.type === "response.output_audio.delta" && event.delta) {
+        const audioPayload = JSON.stringify({
+          event: "media",
+          streamSid: "gpt_stream", // Twilio expects a streamSid
+          media: { payload: event.delta },
+        });
+        twilioWs.send(audioPayload);
+      }
+
+      // Optional: also log GPT text
       if (event.type === "response.output_text.delta") {
         console.log("GPT text:", event.delta);
       }
