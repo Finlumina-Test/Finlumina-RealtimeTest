@@ -10,7 +10,7 @@ router.post("/", (req, res) => {
 <Response>
   <Say voice="Polly.Joanna">Starting realtime conversation...</Say>
   <Connect>
-    <Stream url="${wsUrl}" track="inbound_audio" />
+    <Stream url="${wsUrl}" track="inbound_track" />
   </Connect>
 </Response>`;
 
