@@ -1,3 +1,4 @@
+// routes/voice.js
 import express from "express";
 const router = express.Router();
 
@@ -9,7 +10,7 @@ router.post("/", (req, res) => {
 <Response>
   <Say voice="Polly.Joanna">Starting realtime conversation...</Say>
   <Connect>
-    <Stream url="${wsUrl}" track="inbound_track" />
+    <Stream url="${wsUrl}" track="inbound_audio" />
   </Connect>
 </Response>`;
 
