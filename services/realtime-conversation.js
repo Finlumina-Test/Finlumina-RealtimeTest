@@ -1,11 +1,11 @@
 // services/realtime-conversation.js
-import WebSocket from "ws";
+import { WebSocketServer } from "ws";
 import OpenAI from "openai";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 export default function setupRealtime(server) {
-  const wss = new WebSocket.Server({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true });
 
   server.on("upgrade", (req, socket, head) => {
     if (req.url === "/realtime-conversation") {
