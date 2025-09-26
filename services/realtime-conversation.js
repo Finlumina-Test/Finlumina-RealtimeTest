@@ -4,7 +4,7 @@ import OpenAI from "openai";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-export default function setupRealtimeConversation(server) {
+export default function setupRealtime(server) {
   const wss = new WebSocket.Server({ noServer: true });
 
   server.on("upgrade", (req, socket, head) => {
@@ -24,7 +24,7 @@ export default function setupRealtimeConversation(server) {
       {
         headers: {
           Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-          "OpenAI-Beta": "realtime=v1", // important
+          "OpenAI-Beta": "realtime=v1",
         },
       }
     );
@@ -73,7 +73,7 @@ export default function setupRealtimeConversation(server) {
       }
     });
 
-    // OpenAI → logs (later you can stream audio back)
+    // OpenAI → logs
     openaiWs.on("message", (raw) => {
       const event = JSON.parse(raw.toString());
       if (event.type === "response.output_text.delta") {
