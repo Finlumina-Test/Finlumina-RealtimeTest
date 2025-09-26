@@ -1,10 +1,11 @@
-import WebSocket, { WebSocketServer } from "ws";
+// services/realtime-conversation.js
+import WebSocket from "ws";
 import OpenAI from "openai";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-export function setupRealtime(server) {
-  const wss = new WebSocketServer({ noServer: true });
+export default function setupRealtimeConversation(server) {
+  const wss = new WebSocket.Server({ noServer: true });
 
   server.on("upgrade", (req, socket, head) => {
     if (req.url === "/realtime-conversation") {
@@ -20,51 +21,74 @@ export function setupRealtime(server) {
     // Connect to OpenAI Realtime API
     const openaiWs = new WebSocket(
       "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12",
-      { headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` } }
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          "OpenAI-Beta": "realtime=v1", // important
+        },
+      }
     );
 
-    openaiWs.on("open", () => console.log("🤖 Connected to OpenAI Realtime"));
+    let openaiReady = false;
+    const messageQueue = [];
 
-    // Forward Twilio audio → OpenAI
-    twilioWs.on("message", (msg) => {
-      const data = JSON.parse(msg.toString());
-      if (data.event === "media" && data.media?.payload) {
-        const audioB64 = data.media.payload;
-        openaiWs.send(
-          JSON.stringify({ type: "input_audio_buffer.append", audio: audioB64 })
-        );
-      }
-      if (data.event === "stop") {
-        openaiWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-        openaiWs.send(JSON.stringify({ type: "response.create" }));
+    openaiWs.on("open", () => {
+      console.log("🤖 Connected to OpenAI Realtime");
+      openaiReady = true;
+
+      // Flush queued Twilio messages
+      while (messageQueue.length > 0) {
+        openaiWs.send(messageQueue.shift());
       }
     });
 
-    // Forward GPT audio → Twilio
-    openaiWs.on("message", (raw) => {
-      const event = JSON.parse(raw.toString());
+    // Twilio → OpenAI
+    twilioWs.on("message", (msg) => {
+      const data = JSON.parse(msg.toString());
 
-      if (event.type === "response.output_audio.delta" && event.delta) {
-        const pcmB64 = event.delta;
-        twilioWs.send(
-          JSON.stringify({
-            event: "media",
-            streamSid: "realtime",
-            media: { payload: pcmB64 },
-          })
-        );
+      if (data.event === "media" && data.media.payload) {
+        const audioB64 = data.media.payload;
+        const payload = JSON.stringify({
+          type: "input_audio_buffer.append",
+          audio: audioB64,
+        });
+
+        if (openaiReady) {
+          openaiWs.send(payload);
+        } else {
+          messageQueue.push(payload);
+        }
       }
 
+      if (data.event === "stop") {
+        const commit = JSON.stringify({ type: "input_audio_buffer.commit" });
+        const create = JSON.stringify({ type: "response.create" });
+
+        if (openaiReady) {
+          openaiWs.send(commit);
+          openaiWs.send(create);
+        } else {
+          messageQueue.push(commit, create);
+        }
+      }
+    });
+
+    // OpenAI → logs (later you can stream audio back)
+    openaiWs.on("message", (raw) => {
+      const event = JSON.parse(raw.toString());
       if (event.type === "response.output_text.delta") {
-        console.log("GPT says:", event.delta);
+        console.log("GPT text:", event.delta);
+      }
+      if (event.type === "response.completed") {
+        console.log("✅ GPT turn completed");
       }
     });
 
     // Cleanup
     twilioWs.on("close", () => {
-      console.log("❌ Twilio stream closed");
+      console.log("❌ Twilio closed");
       openaiWs.close();
     });
-    openaiWs.on("close", () => console.log("❌ OpenAI stream closed"));
+    openaiWs.on("close", () => console.log("❌ OpenAI closed"));
   });
 }
