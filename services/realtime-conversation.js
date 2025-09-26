@@ -1,5 +1,6 @@
 // services/realtime-conversation.js
 import { WebSocketServer } from "ws";
+import WebSocket from "ws"; // ✅ needed for client connections
 import OpenAI from "openai";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -18,7 +19,7 @@ export default function setupRealtime(server) {
   wss.on("connection", async (twilioWs) => {
     console.log("📞 Twilio stream connected");
 
-    // Connect to OpenAI Realtime API with audio output
+    // ✅ Connect to OpenAI Realtime API with audio output
     const openaiWs = new WebSocket(
       "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12",
       {
@@ -41,7 +42,7 @@ export default function setupRealtime(server) {
         openaiWs.send(messageQueue.shift());
       }
 
-      // Tell OpenAI we want **audio out** (µ-law = Twilio format)
+      // Tell OpenAI we want audio out (µ-law = Twilio format)
       openaiWs.send(
         JSON.stringify({
           type: "response.create",
@@ -59,10 +60,9 @@ export default function setupRealtime(server) {
       const data = JSON.parse(msg.toString());
 
       if (data.event === "media" && data.media.payload) {
-        const audioB64 = data.media.payload;
         const payload = JSON.stringify({
           type: "input_audio_buffer.append",
-          audio: audioB64,
+          audio: data.media.payload,
         });
 
         if (openaiReady) openaiWs.send(payload);
