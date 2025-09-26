@@ -1,7 +1,8 @@
+// index.js
 import express from "express";
 import bodyParser from "body-parser";
 import voiceRoutes from "./routes/voice.js";
-import { setupRealtime } from "./services/realtime-conversation.js";
+import setupRealtime from "./services/realtime-conversation.js"; // ✅ default import
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
@@ -20,4 +21,5 @@ const server = app.listen(process.env.PORT || 3000, () => {
   console.log("🚀 Server running on port", process.env.PORT || 3000);
 });
 
+// Setup OpenAI Realtime + Twilio bridge
 setupRealtime(server);
