@@ -1,6 +1,6 @@
 // services/realtime-conversation.js
 import { WebSocketServer } from "ws";
-import WebSocket from "ws"; // ✅ needed for client connections
+import WebSocket from "ws"; // for client → OpenAI
 import OpenAI from "openai";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -19,7 +19,7 @@ export default function setupRealtime(server) {
   wss.on("connection", async (twilioWs) => {
     console.log("📞 Twilio stream connected");
 
-    // ✅ Connect to OpenAI Realtime API with audio output
+    // Connect to OpenAI Realtime API
     const openaiWs = new WebSocket(
       "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12",
       {
@@ -37,12 +37,12 @@ export default function setupRealtime(server) {
       console.log("🤖 Connected to OpenAI Realtime");
       openaiReady = true;
 
-      // Flush queued Twilio messages
+      // Flush queued messages
       while (messageQueue.length > 0) {
         openaiWs.send(messageQueue.shift());
       }
 
-      // Tell OpenAI we want audio out (µ-law = Twilio format)
+      // Ask for audio output (µ-law 8k for Twilio)
       openaiWs.send(
         JSON.stringify({
           type: "response.create",
@@ -57,19 +57,33 @@ export default function setupRealtime(server) {
 
     // Twilio → OpenAI
     twilioWs.on("message", (msg) => {
-      const data = JSON.parse(msg.toString());
+      let data;
+      try {
+        data = JSON.parse(msg.toString());
+      } catch (err) {
+        console.error("❌ Failed to parse Twilio message:", msg.toString());
+        return;
+      }
+
+      console.log("Twilio event:", data.event);
 
       if (data.event === "media" && data.media.payload) {
+        console.log("🎤 Got audio frame from Twilio");
         const payload = JSON.stringify({
           type: "input_audio_buffer.append",
           audio: data.media.payload,
         });
 
-        if (openaiReady) openaiWs.send(payload);
-        else messageQueue.push(payload);
+        if (openaiReady) {
+          console.log("➡️ Forwarding audio frame to OpenAI");
+          openaiWs.send(payload);
+        } else {
+          messageQueue.push(payload);
+        }
       }
 
       if (data.event === "stop") {
+        console.log("⏹️ Twilio sent stop");
         const commit = JSON.stringify({ type: "input_audio_buffer.commit" });
         const create = JSON.stringify({ type: "response.create" });
 
@@ -84,9 +98,14 @@ export default function setupRealtime(server) {
 
     // OpenAI → Twilio
     openaiWs.on("message", (raw) => {
-      const event = JSON.parse(raw.toString());
+      let event;
+      try {
+        event = JSON.parse(raw.toString());
+      } catch (err) {
+        console.error("❌ Failed to parse OpenAI message:", raw.toString());
+        return;
+      }
 
-      // Logs
       if (event.type === "response.output_text.delta") {
         console.log("GPT text:", event.delta);
       }
@@ -94,8 +113,8 @@ export default function setupRealtime(server) {
         console.log("✅ GPT turn completed");
       }
 
-      // Send audio chunks back to Twilio
       if (event.type === "response.output_audio.delta" && event.delta) {
+        console.log("🔊 Sending audio chunk back to Twilio");
         twilioWs.send(
           JSON.stringify({
             event: "media",
@@ -111,5 +130,8 @@ export default function setupRealtime(server) {
       openaiWs.close();
     });
     openaiWs.on("close", () => console.log("❌ OpenAI closed"));
+    openaiWs.on("error", (err) =>
+      console.error("❌ OpenAI WS error:", err.message)
+    );
   });
 }
