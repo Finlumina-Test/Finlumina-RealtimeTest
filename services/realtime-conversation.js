@@ -32,6 +32,7 @@ export default function setupRealtime(server) {
 
     let openaiReady = false;
     const messageQueue = [];
+    let commitInterval = null;
 
     openaiWs.on("open", () => {
       console.log("🤖 Connected to OpenAI Realtime");
@@ -42,7 +43,7 @@ export default function setupRealtime(server) {
         openaiWs.send(messageQueue.shift());
       }
 
-      // Ask for audio output (µ-law 8k for Twilio)
+      // Ask for audio + text output
       openaiWs.send(
         JSON.stringify({
           type: "response.create",
@@ -53,6 +54,15 @@ export default function setupRealtime(server) {
           },
         })
       );
+
+      // 🔁 Periodically commit audio buffer so OpenAI responds mid-call
+      commitInterval = setInterval(() => {
+        if (openaiWs.readyState === WebSocket.OPEN) {
+          openaiWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+          openaiWs.send(JSON.stringify({ type: "response.create" }));
+          console.log("🟢 Sent commit + response request to OpenAI");
+        }
+      }, 500);
     });
 
     // Twilio → OpenAI
@@ -107,7 +117,7 @@ export default function setupRealtime(server) {
       }
 
       if (event.type === "response.output_text.delta") {
-        console.log("GPT text:", event.delta);
+        console.log("💬 GPT text (partial):", event.delta);
       }
       if (event.type === "response.completed") {
         console.log("✅ GPT turn completed");
@@ -127,9 +137,15 @@ export default function setupRealtime(server) {
     // Cleanup
     twilioWs.on("close", () => {
       console.log("❌ Twilio closed");
+      if (commitInterval) clearInterval(commitInterval);
       openaiWs.close();
     });
-    openaiWs.on("close", () => console.log("❌ OpenAI closed"));
+
+    openaiWs.on("close", () => {
+      console.log("❌ OpenAI closed");
+      if (commitInterval) clearInterval(commitInterval);
+    });
+
     openaiWs.on("error", (err) =>
       console.error("❌ OpenAI WS error:", err.message)
     );
