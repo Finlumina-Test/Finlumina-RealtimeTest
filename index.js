@@ -1,40 +1,22 @@
+// index.js
 import express from "express";
 import bodyParser from "body-parser";
-import { WebSocketServer } from "ws";
+import voiceRoutes from "./routes/voice.js";
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
+app.use(bodyParser.json());
 
-// TwiML response for incoming call
-app.post("/voice", (req, res) => {
-  res.type("text/xml");
-  res.send(`
-    <Response>
-      <Connect>
-        <Stream url="wss://${process.env.RENDER_EXTERNAL_HOSTNAME}/voice" />
-      </Connect>
-    </Response>
-  `);
+// Health check
+app.get("/", (req, res) => {
+  res.send("✅ Finlumina Vox Realtime Server running!");
 });
 
-// Create server + WebSocket
-const server = app.listen(process.env.PORT || 3001, () =>
-  console.log("Server running")
-);
+// Twilio webhook for calls
+app.use("/voice", voiceRoutes);
 
-const wss = new WebSocketServer({ server, path: "/voice" });
-
-wss.on("connection", (ws) => {
-  console.log("✅ Twilio WebSocket connected");
-
-  ws.on("message", (msg) => {
-    try {
-      const data = JSON.parse(msg.toString());
-      console.log("Received from Twilio:", data);
-    } catch (err) {
-      console.error("❌ Non-JSON message:", msg.toString());
-    }
-  });
-
-  ws.on("close", () => console.log("❌ Twilio WebSocket closed"));
+// Start server
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });
