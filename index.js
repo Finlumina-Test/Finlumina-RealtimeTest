@@ -1,30 +1,22 @@
+// index.js
 import express from "express";
-import fetch from "node-fetch";
-import twilio from "twilio";
+import bodyParser from "body-parser";
+import voiceRoutes from "./routes/voice.js";
 
 const app = express();
+app.use(bodyParser.urlencoded({ extended: false }));
+app.use(bodyParser.json());
 
-app.post("/voice", async (req, res) => {
-  // Fetch ephemeral key
-  const sessionResp = await fetch("http://localhost:3000/session");
-  const sessionData = await sessionResp.json();
-
-  const ephemeralKey = sessionData.client_secret?.value;
-  if (!ephemeralKey) {
-    return res.status(500).send("No ephemeral key");
-  }
-
-  // Build WebSocket URL with query params
-  const wsUrl = `wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17&authorization=Bearer%20${encodeURIComponent(ephemeralKey)}&openai-beta=realtime=v1`;
-
-  const twiml = new twilio.twiml.VoiceResponse();
-  const connect = twiml.connect();
-  connect.stream({ url: wsUrl });
-
-  res.type("text/xml");
-  res.send(twiml.toString());
+// Health check
+app.get("/", (req, res) => {
+  res.send("✅ Finlumina Vox Realtime Server is running!");
 });
 
-app.listen(3001, () => {
-  console.log("TwiML app running on port 3001");
+// Twilio webhook
+app.use("/voice", voiceRoutes);
+
+// Start server (Render provides PORT automatically)
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });
