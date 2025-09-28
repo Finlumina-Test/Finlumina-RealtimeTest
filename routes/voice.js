@@ -10,7 +10,7 @@ router.post("/", async (req, res) => {
     const resp = await fetch("https://api.openai.com/v1/realtime/sessions", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, // your real key (server-side only)
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, // real key (server-side only)
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -27,6 +27,7 @@ router.post("/", async (req, res) => {
 
     const data = await resp.json();
     const EPHEMERAL_KEY = data.client_secret?.value;
+
     if (!EPHEMERAL_KEY) {
       console.error("❌ No ephemeral key in OpenAI response:", data);
       return res.status(500).send("No ephemeral key received");
@@ -34,6 +35,7 @@ router.post("/", async (req, res) => {
 
     console.log("✅ Ephemeral key fetched, returning TwiML to Twilio...");
 
+    // Tell Twilio to stream audio directly to OpenAI
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="Polly.Joanna">Starting realtime conversation...</Say>
@@ -54,5 +56,4 @@ router.post("/", async (req, res) => {
   }
 });
 
-// ✅ Ensure default export
 export default router;
