@@ -2,7 +2,7 @@
 import express from "express";
 import bodyParser from "body-parser";
 import voiceRoutes from "./routes/voice.js";
-import setupRealtime from "./services/realtime-conversation.js"; // ✅ default import
+import setupRealtime from "./services/realtime-conversation.js"; 
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
@@ -16,9 +16,10 @@ app.get("/", (req, res) => {
 // Twilio webhook
 app.use("/voice", voiceRoutes);
 
-// Upgrade HTTP → WebSocket for realtime audio
-const server = app.listen(process.env.PORT || 3000, () => {
-  console.log("🚀 Server running on port", process.env.PORT || 3000);
+// Start + upgrade to WebSocket
+const PORT = process.env.PORT || 3000;
+const server = app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });
 
 // Setup OpenAI Realtime + Twilio bridge
