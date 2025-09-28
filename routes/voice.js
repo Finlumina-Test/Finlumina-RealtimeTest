@@ -10,7 +10,7 @@ router.post("/", async (req, res) => {
     const resp = await fetch("https://api.openai.com/v1/realtime/sessions", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, // real key (server-side only)
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, // ✅ server-side only
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
