@@ -6,16 +6,18 @@ const router = express.Router();
 
 router.post("/", async (req, res) => {
   try {
-    // Ask OpenAI for an ephemeral key
+    // Ask OpenAI for an ephemeral key + system instructions
     const resp = await fetch("https://api.openai.com/v1/realtime/sessions", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, // your real key (server-side only)
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
         model: "gpt-4o-realtime-preview-2024-12",
-        voice: "verse", // OpenAI realtime TTS voice
+        voice: "verse", // OpenAI realtime voice
+        instructions:
+          "You are a helpful call assistant for a restaurant. Answer questions about the menu, take reservations, and respond politely and concisely.",
       }),
     });
 
@@ -31,6 +33,8 @@ router.post("/", async (req, res) => {
       console.error("❌ No ephemeral key in OpenAI response:", data);
       return res.status(500).send("No ephemeral key received");
     }
+
+    console.log("✅ Ephemeral key fetched, returning TwiML to Twilio...");
 
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
