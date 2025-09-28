@@ -6,7 +6,7 @@ const router = express.Router();
 
 router.post("/", async (req, res) => {
   try {
-    // Ask OpenAI for ephemeral key
+    // Request ephemeral key from OpenAI
     const resp = await fetch("https://api.openai.com/v1/realtime/sessions", {
       method: "POST",
       headers: {
@@ -26,23 +26,21 @@ router.post("/", async (req, res) => {
     }
 
     const data = await resp.json();
-    const EPHEMERAL_KEY = data.client_secret?.value;
+    const ephemeralKey = data.client_secret?.value;
 
-    if (!EPHEMERAL_KEY) {
+    if (!ephemeralKey) {
       console.error("❌ No ephemeral key in OpenAI response:", data);
       return res.status(500).send("No ephemeral key received");
     }
 
     console.log("✅ Ephemeral key fetched, sending TwiML..");
 
-    // Instead of direct OpenAI, stream to our own server (the bridge)
+    // Build TwiML instructing Twilio to connect to your WebSocket
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="Polly.Joanna">Starting realtime conversation...</Say>
   <Connect>
-    <Stream url="wss://${process.env.RENDER_EXTERNAL_HOSTNAME || 'localhost:3000'}/media-stream">
-      <Parameter name="ephemeralKey" value="${EPHEMERAL_KEY}" />
-    </Stream>
+    <Stream url="wss://${req.headers.host}/realtime-conversation?key=${ephemeralKey}" />
   </Connect>
 </Response>`;
 
