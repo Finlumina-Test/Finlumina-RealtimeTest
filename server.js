@@ -1,24 +1,23 @@
 // server.js
 import express from "express";
 import bodyParser from "body-parser";
-import voiceRoutes from "./routes/voice.js";
-import setupRealtimeBridge from "./services/realtime-conversation.js";
+import expressWs from "express-ws";
+
+import voiceRouter from "./routes/voice.js";
+import realtimeConversation from "./services/realtime-conversation.js";
 
 const app = express();
-app.use(bodyParser.urlencoded({ extended: false }));
+expressWs(app); // enable WebSocket support
+
 app.use(bodyParser.json());
 
-// Health check
-app.get("/", (req, res) => {
-  res.send("✅ Finlumina Vox Realtime Bridge is running!");
+// Voice route (TwiML generator)
+app.use("/voice", voiceRouter);
+
+// Realtime conversation WebSocket
+app.ws("/realtime-conversation", realtimeConversation);
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });
-
-// Twilio webhook
-app.use("/voice", voiceRoutes);
-
-const server = app.listen(process.env.PORT || 3000, () => {
-  console.log("🚀 Server running on port", process.env.PORT || 3000);
-});
-
-// Attach Twilio ↔ OpenAI bridge
-setupRealtimeBridge(server);
