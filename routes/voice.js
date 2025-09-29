@@ -35,12 +35,19 @@ router.post("/", async (req, res) => {
 
     console.log("✅ Ephemeral key fetched, sending TwiML..");
 
+    // Use fixed public domain for Render
+    const host = process.env.PUBLIC_DOMAIN;
+    if (!host) {
+      console.error("❌ PUBLIC_DOMAIN not set in environment variables");
+      return res.status(500).send("Server misconfigured");
+    }
+
     // Build TwiML instructing Twilio to connect to your WebSocket
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="Polly.Joanna">Starting realtime conversation...</Say>
   <Connect>
-    <Stream url="wss://${req.headers.host}/realtime-conversation?key=${ephemeralKey}" />
+    <Stream url="wss://${host}/realtime-conversation?key=${ephemeralKey}" />
   </Connect>
 </Response>`;
 
