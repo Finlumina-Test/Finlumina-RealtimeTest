@@ -1,127 +1,75 @@
 // services/realtime-conversation.js
 import WebSocket from "ws";
-import fetch from "node-fetch";
-import { spawn } from "child_process";
 
-/**
- * Resample PCM16 audio (16kHz → 8kHz) for Twilio
- */
-function resampleAudioBuffer(inputBase64) {
-  return new Promise((resolve, reject) => {
-    const inputBuffer = Buffer.from(inputBase64, "base64");
-    const ffmpeg = spawn("ffmpeg", [
-      "-f", "s16le",
-      "-ar", "16000",
-      "-ac", "1",
-      "-i", "pipe:0",
-      "-f", "s16le",
-      "-ar", "8000",
-      "-ac", "1",
-      "pipe:1"
-    ]);
-
-    const chunks = [];
-    ffmpeg.stdout.on("data", (chunk) => chunks.push(chunk));
-    ffmpeg.stderr.on("data", () => {}); // ignore logs
-
-    ffmpeg.on("close", (code) => {
-      if (code === 0) resolve(Buffer.concat(chunks).toString("base64"));
-      else reject(new Error("FFmpeg resample failed"));
-    });
-
-    ffmpeg.stdin.write(inputBuffer);
-    ffmpeg.stdin.end();
-  });
-}
-
-export default async function realtimeConversation(twilioWs, req) {
+export default function realtimeConversation(twilioWs, req) {
   console.log("✅ Twilio WS connected");
 
-  // 1️⃣ Fetch ephemeral key from OpenAI
-  let ephemeralKey;
-  try {
-    const resp = await fetch("https://api.openai.com/v1/realtime/sessions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-realtime-preview-2024-12",
-        voice: "verse"
-      })
-    });
-    const data = await resp.json();
-    ephemeralKey = data.client_secret?.value;
-    if (!ephemeralKey) throw new Error("No ephemeral key received");
-    console.log("🔑 Ephemeral key fetched");
-  } catch (err) {
-    console.error("❌ Failed to fetch ephemeral key:", err);
+  // Extract ephemeral key from query params
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const ephemeralKey = url.searchParams.get("key");
+
+  if (!ephemeralKey) {
+    console.error("❌ No ephemeral key in request:", req.url);
     twilioWs.close();
     return;
   }
 
-  // 2️⃣ Connect to OpenAI Realtime WS
+  // Connect to OpenAI Realtime API
   const openAiWs = new WebSocket(
     "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12",
-    { headers: { Authorization: `Bearer ${ephemeralKey}`, "OpenAI-Beta": "realtime=v1" } }
+    {
+      headers: {
+        Authorization: `Bearer ${ephemeralKey}`,
+        "OpenAI-Beta": "realtime=v1",
+      },
+    }
   );
 
-  // Queue early Twilio audio until OpenAI WS is ready
-  const openAiQueue = [];
   let openAiReady = false;
+  const openAiQueue = [];
 
+  // Smarter logging controls
+  let chunkCount = 0;
+  let lastLogTime = Date.now();
+
+  // --- OpenAI events ---
   openAiWs.on("open", () => {
-    console.log("🔗 Connected to OpenAI Realtime API");
     openAiReady = true;
+    console.log("🔗 Connected to OpenAI Realtime API");
 
     // Flush queued audio
-    while (openAiQueue.length) openAiWs.send(openAiQueue.shift());
+    while (openAiQueue.length > 0) {
+      openAiWs.send(openAiQueue.shift());
+    }
 
-    // Send system instruction to act as voice assistant
-    openAiWs.send(JSON.stringify({
-      type: "message",
-      message: {
-        role: "system",
-        content: [{ type: "text", text: "You are a friendly voice assistant. Reply naturally to incoming audio." }]
-      }
-    }));
+    // Tell OpenAI to start generating responses
+    openAiWs.send(
+      JSON.stringify({
+        type: "response.create",
+        response: {
+          modalities: ["text", "audio"],
+          instructions: "You are a helpful call agent for Finlumina Vox. Answer politely and clearly.",
+        },
+      })
+    );
+    console.log("📤 Sent initial response.create to OpenAI");
   });
 
-  // 3️⃣ OpenAI → Twilio
-  openAiWs.on("message", async (msg) => {
+  openAiWs.on("message", (msg) => {
     try {
       const data = JSON.parse(msg.toString());
+      console.log("📥 OpenAI → Twilio:", JSON.stringify(data, null, 2));
 
-      // Log meaningful events
-      if (data.type === "output_audio_buffer" && data.audio) {
-        const twilioAudio = await resampleAudioBuffer(data.audio);
-        twilioWs.send(JSON.stringify({
+      // Forward audio output (if any) back to Twilio
+      if (data.type === "response.output_audio.delta" && data.audio) {
+        const twilioMsg = JSON.stringify({
           event: "media",
-          media: { payload: twilioAudio, track: "outbound" }
-        }));
-
-        console.log(`[OpenAI → Twilio] Audio chunk sent, size=${twilioAudio.length} bytes`);
+          media: { payload: data.audio },
+        });
+        twilioWs.send(twilioMsg);
       }
-
-      if (data.type === "message" && data.message?.content) {
-        console.log(`[OpenAI] Message: ${data.message.content[0]?.text || ""}`);
-      }
-
-      // Automatically send transcription as user message to trigger TTS
-      if (data.type === "transcript_result" && data.text) {
-        console.log(`[OpenAI] Transcribed text: "${data.text}"`);
-        openAiWs.send(JSON.stringify({
-          type: "message",
-          message: {
-            role: "user",
-            content: [{ type: "text", text: data.text }]
-          }
-        }));
-      }
-
-    } catch (e) {
-      console.error("❌ Failed to parse OpenAI message:", e);
+    } catch (err) {
+      console.error("❌ Failed to parse OpenAI message:", err);
     }
   });
 
@@ -135,12 +83,17 @@ export default async function realtimeConversation(twilioWs, req) {
     twilioWs.close();
   });
 
-  // 4️⃣ Twilio → OpenAI
+  // --- Twilio events ---
   twilioWs.on("message", (msg) => {
     try {
       const data = JSON.parse(msg.toString());
+
       if (data.event === "media" && data.media?.payload) {
-        const payload = JSON.stringify({ type: "input_audio_buffer", audio: data.media.payload });
+        // Wrap Twilio audio into OpenAI input format
+        const payload = JSON.stringify({
+          type: "input_audio_buffer.append",
+          audio: data.media.payload,
+        });
 
         if (openAiReady) {
           openAiWs.send(payload);
@@ -148,16 +101,33 @@ export default async function realtimeConversation(twilioWs, req) {
           openAiQueue.push(payload);
         }
 
-        // Log audio chunk size
-        console.log(`[Twilio → OpenAI] Audio chunk received, size=${data.media.payload.length} bytes`);
+        // Smarter logging: show once per second
+        chunkCount++;
+        const now = Date.now();
+        if (now - lastLogTime > 1000) {
+          console.log(`[Twilio → OpenAI] ${chunkCount} audio chunks forwarded in last second`);
+          chunkCount = 0;
+          lastLogTime = now;
+        }
+      } else if (data.event === "start") {
+        console.log("▶️ Twilio stream started:", data.start);
+      } else if (data.event === "stop") {
+        console.log("⏹️ Twilio stream stopped");
+        openAiWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+        openAiWs.send(JSON.stringify({ type: "response.create" }));
       }
-    } catch (e) {
-      console.error("❌ Failed to parse Twilio WS message:", e);
+    } catch (err) {
+      console.error("❌ Failed to parse Twilio WS message:", err);
     }
   });
 
   twilioWs.on("close", () => {
     console.log("❌ Twilio WS closed");
+    openAiWs.close();
+  });
+
+  twilioWs.on("error", (err) => {
+    console.error("❌ Twilio WS error:", err);
     openAiWs.close();
   });
 }
