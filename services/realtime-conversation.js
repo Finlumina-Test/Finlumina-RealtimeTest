@@ -4,17 +4,20 @@ import WebSocket from "ws";
 export default function realtimeConversation(ws, req) {
   console.log("✅ Twilio WebSocket connected");
 
-  // Grab ephemeral key from query params
-  const url = new URL(req.url, `http://${req.headers.host}`);
+  // Log full incoming URL for debugging
+  console.log("Incoming WS URL:", req.url);
+
+  const url = new URL(req.url, `https://${process.env.PUBLIC_DOMAIN}`);
   const ephemeralKey = url.searchParams.get("key");
 
   if (!ephemeralKey) {
-    console.error("❌ No ephemeral key in request");
+    console.error("❌ No ephemeral key in request", req.url);
+    ws.send(JSON.stringify({ error: "Missing ephemeral key" }));
     ws.close();
     return;
   }
 
-  // Connect to OpenAI realtime API
+  // Connect to OpenAI Realtime API
   const openAiWs = new WebSocket(
     "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12",
     {
