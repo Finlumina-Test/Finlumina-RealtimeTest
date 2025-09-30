@@ -1,7 +1,5 @@
 import fetch from "node-fetch";
 import WebSocket from "ws";
-import { Transform } from "stream";
-import { encode as ulawEncode } from "ulaw-js";
 
 // Simple linear resample PCM helper
 function resample8to16(buffer8k) {
@@ -14,13 +12,27 @@ function resample8to16(buffer8k) {
   return outSamples;
 }
 
-// Convert PCM 16-bit to μ-law 8 kHz
-function pcm16ToMuLaw8(buffer16) {
-  const ulaw = new Uint8Array(buffer16.length);
-  for (let i = 0; i < buffer16.length; i++) {
-    ulaw[i] = ulawEncode(buffer16[i]);
+// PCM 16-bit to μ-law 8-bit (inline, no external package)
+function pcm16ToMuLaw8(pcm16) {
+  const MULAW_MAX = 0x1fff;
+  const MULAW_BIAS = 33;
+  const output = new Uint8Array(pcm16.length);
+
+  for (let i = 0; i < pcm16.length; i++) {
+    let sample = pcm16[i];
+    let sign = (sample >> 8) & 0x80;
+    if (sign !== 0) sample = -sample;
+    if (sample > MULAW_MAX) sample = MULAW_MAX;
+    sample = sample + MULAW_BIAS;
+    let exponent = 7;
+    for (let expMask = 0x4000; (sample & expMask) === 0 && exponent > 0; expMask >>= 1) {
+      exponent--;
+    }
+    let mantissa = (sample >> (exponent + 3)) & 0x0f;
+    output[i] = ~(sign | (exponent << 4) | mantissa);
   }
-  return ulaw;
+
+  return output;
 }
 
 export function setupRealtime(app) {
@@ -72,8 +84,8 @@ export function setupRealtime(app) {
             const resp = JSON.parse(msg.toString());
             if (resp.type === "audio_chunk") {
               // Convert OpenAI audio to μ-law 8kHz for Twilio
-              const pcm16 = Buffer.from(resp.audio, "base64");
-              const muLaw8 = pcm16ToMuLaw8(new Int16Array(pcm16.buffer));
+              const pcm16 = new Int16Array(Buffer.from(resp.audio, "base64").buffer);
+              const muLaw8 = pcm16ToMuLaw8(pcm16);
               ws.send(JSON.stringify({
                 type: "media",
                 media: Buffer.from(muLaw8).toString("base64")
@@ -86,8 +98,8 @@ export function setupRealtime(app) {
         if (data.type === "input_audio_buffer") {
           if (openAIWs && openAIWs.readyState === 1) {
             // Resample 8k → 16k and forward
-            const buffer8k = Buffer.from(data.audio, "base64");
-            const buffer16k = resample8to16(new Int16Array(buffer8k.buffer));
+            const buffer8k = new Int16Array(Buffer.from(data.audio, "base64").buffer);
+            const buffer16k = resample8to16(buffer8k);
             openAIWs.send(JSON.stringify({
               type: "input_audio_buffer",
               audio: Buffer.from(buffer16k).toString("base64"),
