@@ -1,22 +1,63 @@
-import { handleRealtimeConversation } from "./openai.js";
+import expressWs from "express-ws";
+import WebSocket from "ws";
 
-/**
- * WebSocket handler for Twilio ↔ OpenAI Realtime.
- * Each inbound Twilio WebSocket gets piped through here.
- */
-export default function realtimeConversation(ws, req) {
-  console.log("✅ Twilio WebSocket connected");
+export default function setupRealtime(server) {
+  const { app } = expressWs(server);
 
-  ws.on("message", async (message) => {
-    try {
-      await handleRealtimeConversation(ws, message);
-    } catch (err) {
-      console.error("Realtime error:", err);
-      ws.send(JSON.stringify({ error: "Realtime processing failed" }));
+  app.ws("/realtime", (ws, req) => {
+    console.log("✅ Twilio WebSocket connected");
+
+    const EPHEMERAL_KEY = req.query["ephemeralKey"];
+    if (!EPHEMERAL_KEY) {
+      console.error("❌ No ephemeral key in request");
+      ws.close();
+      return;
     }
-  });
 
-  ws.on("close", () => {
-    console.log("❌ Twilio WebSocket disconnected");
+    // Connect to OpenAI Realtime API
+    const openAiWs = new WebSocket(
+      "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12",
+      {
+        headers: {
+          Authorization: `Bearer ${EPHEMERAL_KEY}`,
+          "OpenAI-Beta": "realtime=v1"
+        }
+      }
+    );
+
+    openAiWs.on("open", () => {
+      console.log("🔗 Connected to OpenAI Realtime API");
+    });
+
+    openAiWs.on("message", (msg) => {
+      console.log("🔊 Message from OpenAI → forwarding to Twilio");
+      ws.send(msg);
+    });
+
+    openAiWs.on("close", () => {
+      console.log("❌ OpenAI connection closed");
+      ws.close();
+    });
+
+    openAiWs.on("error", (err) => {
+      console.error("❌ OpenAI WS error:", err);
+      ws.close();
+    });
+
+    // Forward Twilio → OpenAI
+    ws.on("message", (msg) => {
+      console.log("📤 Forwarding audio/media to OpenAI...");
+      openAiWs.send(msg);
+    });
+
+    ws.on("close", () => {
+      console.log("❌ Twilio WebSocket closed");
+      openAiWs.close();
+    });
+
+    ws.on("error", (err) => {
+      console.error("❌ Twilio WS error:", err);
+      openAiWs.close();
+    });
   });
 }
