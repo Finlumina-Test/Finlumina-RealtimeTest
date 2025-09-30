@@ -1,21 +1,32 @@
 // server.js
 import express from "express";
-import bodyParser from "body-parser";
-import expressWs from "express-ws";
-
-import voiceRouter from "./routes/voice.js";
+import http from "http";
+import { WebSocketServer } from "ws";
+import voiceRoutes from "./routes/voice.js";
 import realtimeConversation from "./services/realtime-conversation.js";
 
 const app = express();
-expressWs(app);
+app.use(express.json());
 
-app.use(bodyParser.json());
+// Mount the /voice route
+app.use("/", voiceRoutes);
 
-// Twilio voice route
-app.use("/voice", voiceRouter);
+const server = http.createServer(app);
 
-// WebSocket for Twilio <Stream>
-app.ws("/realtime-conversation", realtimeConversation);
+// Attach WS server
+const wss = new WebSocketServer({ noServer: true });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+server.on("upgrade", (req, socket, head) => {
+  if (req.url === "/realtime-conversation/.websocket") {
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      realtimeConversation(ws, req);
+    });
+  } else {
+    socket.destroy();
+  }
+});
+
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
