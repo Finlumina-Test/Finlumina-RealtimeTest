@@ -1,63 +1,49 @@
-import expressWs from "express-ws";
-import WebSocket from "ws";
+import fetch from "node-fetch";
 
-export default function setupRealtime(server) {
-  const { app } = expressWs(server);
-
+export function setupRealtime(app) {
   app.ws("/realtime", (ws, req) => {
     console.log("✅ Twilio WebSocket connected");
 
-    const EPHEMERAL_KEY = req.query["ephemeralKey"];
-    if (!EPHEMERAL_KEY) {
-      console.error("❌ No ephemeral key in request");
-      ws.close();
-      return;
-    }
+    ws.on("message", async (msg) => {
+      try {
+        const data = JSON.parse(msg);
 
-    // Connect to OpenAI Realtime API
-    const openAiWs = new WebSocket(
-      "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12",
-      {
-        headers: {
-          Authorization: `Bearer ${EPHEMERAL_KEY}`,
-          "OpenAI-Beta": "realtime=v1"
+        if (data.type === "get-ephemeral-key") {
+          console.log("🔑 Generating ephemeral key from OpenAI...");
+          const resp = await fetch("https://api.openai.com/v1/realtime/sessions", {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              model: "gpt-4o-realtime-preview-2024-12-17",
+              voice: "verse",
+            }),
+          });
+
+          const keyData = await resp.json();
+
+          if (keyData.client_secret?.value) {
+            ws.send(JSON.stringify({
+              type: "ephemeral-key",
+              data: keyData.client_secret.value,
+            }));
+            console.log("✅ Ephemeral key sent to Twilio");
+          } else {
+            ws.send(JSON.stringify({ type: "error", error: "No ephemeral key in response" }));
+            console.error("❌ No ephemeral key in response:", keyData);
+          }
+        } else {
+          console.log("📩 Non-key message received from Twilio:", data.type);
         }
+      } catch (err) {
+        console.error("❌ Error handling WebSocket message:", err.message);
       }
-    );
-
-    openAiWs.on("open", () => {
-      console.log("🔗 Connected to OpenAI Realtime API");
-    });
-
-    openAiWs.on("message", (msg) => {
-      console.log("🔊 Message from OpenAI → forwarding to Twilio");
-      ws.send(msg);
-    });
-
-    openAiWs.on("close", () => {
-      console.log("❌ OpenAI connection closed");
-      ws.close();
-    });
-
-    openAiWs.on("error", (err) => {
-      console.error("❌ OpenAI WS error:", err);
-      ws.close();
-    });
-
-    // Forward Twilio → OpenAI
-    ws.on("message", (msg) => {
-      console.log("📤 Forwarding audio/media to OpenAI...");
-      openAiWs.send(msg);
     });
 
     ws.on("close", () => {
-      console.log("❌ Twilio WebSocket closed");
-      openAiWs.close();
-    });
-
-    ws.on("error", (err) => {
-      console.error("❌ Twilio WS error:", err);
-      openAiWs.close();
+      console.log("⚠️ Twilio WebSocket closed");
     });
   });
 }
