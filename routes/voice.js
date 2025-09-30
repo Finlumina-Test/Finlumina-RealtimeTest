@@ -9,7 +9,6 @@ router.post("/incoming", (req, res) => {
 
   console.log("📞 Incoming call – connecting Twilio <Stream> to WebSocket...");
 
-  // Connect Twilio call audio to your Render WebSocket endpoint
   twiml.connect().stream({
     url: `wss://${process.env.RENDER_EXTERNAL_HOSTNAME}/realtime`
   });
