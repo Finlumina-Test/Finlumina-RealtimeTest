@@ -12,6 +12,9 @@ export default function realtimeConversation(twilioWs, req) {
   let chunkCount = 0;
   let lastLogTime = Date.now();
 
+  // Flush interval (commits audio every ~1s for real-time responses)
+  let flushInterval = null;
+
   function connectOpenAI(ephemeralKey) {
     openAiWs = new WebSocket(
       "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12",
@@ -32,23 +35,46 @@ export default function realtimeConversation(twilioWs, req) {
         openAiWs.send(openAiQueue.shift());
       }
 
+      // Configure session (voice + turn detection)
+      openAiWs.send(
+        JSON.stringify({
+          type: "session.update",
+          session: {
+            voice: "verse", // choose voice: "verse", "sage", etc.
+            turn_detection: { type: "server_vad" },
+          },
+        })
+      );
+
       // Kick off with an initial response.create
       openAiWs.send(
         JSON.stringify({
           type: "response.create",
           response: {
             modalities: ["text", "audio"],
-            instructions: "You are a helpful call agent for Finlumina Vox. Answer politely and clearly.",
+            instructions:
+              "You are a helpful call agent for Finlumina Vox. Answer politely and clearly.",
           },
         })
       );
       console.log("📤 Sent initial response.create to OpenAI");
+
+      // Start periodic flushing (commits buffer every second)
+      flushInterval = setInterval(() => {
+        if (openAiReady && openAiWs?.readyState === WebSocket.OPEN) {
+          openAiWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+          openAiWs.send(JSON.stringify({ type: "response.create" }));
+        }
+      }, 1000);
     });
 
     openAiWs.on("message", (msg) => {
       try {
         const data = JSON.parse(msg.toString());
-        console.log("📥 OpenAI →", JSON.stringify(data, null, 2));
+        // Debug logging only if useful
+        if (data.type !== "response.output_audio.delta") {
+          console.log("📥 OpenAI →", JSON.stringify(data, null, 2));
+        }
 
         // Forward audio back to Twilio
         if (data.type === "response.output_audio.delta" && data.audio) {
@@ -65,11 +91,13 @@ export default function realtimeConversation(twilioWs, req) {
 
     openAiWs.on("close", () => {
       console.log("❌ OpenAI WS closed");
+      clearInterval(flushInterval);
       twilioWs.close();
     });
 
     openAiWs.on("error", (err) => {
       console.error("❌ OpenAI WS error:", err);
+      clearInterval(flushInterval);
       twilioWs.close();
     });
   }
@@ -96,7 +124,7 @@ export default function realtimeConversation(twilioWs, req) {
           audio: data.media.payload,
         });
 
-        if (openAiReady && openAiWs) {
+        if (openAiReady && openAiWs?.readyState === WebSocket.OPEN) {
           openAiWs.send(payload);
         } else {
           openAiQueue.push(payload);
@@ -106,13 +134,15 @@ export default function realtimeConversation(twilioWs, req) {
         chunkCount++;
         const now = Date.now();
         if (now - lastLogTime > 1000) {
-          console.log(`[Twilio → OpenAI] ${chunkCount} audio chunks forwarded in last second`);
+          console.log(
+            `[Twilio → OpenAI] ${chunkCount} audio chunks forwarded in last second`
+          );
           chunkCount = 0;
           lastLogTime = now;
         }
       } else if (data.event === "stop") {
         console.log("⏹️ Twilio stream stopped");
-        if (openAiWs) {
+        if (openAiWs?.readyState === WebSocket.OPEN) {
           openAiWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
           openAiWs.send(JSON.stringify({ type: "response.create" }));
         }
@@ -124,11 +154,13 @@ export default function realtimeConversation(twilioWs, req) {
 
   twilioWs.on("close", () => {
     console.log("❌ Twilio WS closed");
+    clearInterval(flushInterval);
     if (openAiWs) openAiWs.close();
   });
 
   twilioWs.on("error", (err) => {
     console.error("❌ Twilio WS error:", err);
+    clearInterval(flushInterval);
     if (openAiWs) openAiWs.close();
   });
 }
