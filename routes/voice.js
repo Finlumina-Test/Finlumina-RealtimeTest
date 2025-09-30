@@ -7,7 +7,7 @@ router.post("/incoming", (req, res) => {
   const VoiceResponse = twilio.twiml.VoiceResponse;
   const twiml = new VoiceResponse();
 
-  console.log("📞 Incoming call – creating Twilio <Stream>...");
+  console.log("📞 Incoming call – connecting Twilio <Stream> to WebSocket...");
 
   // Connect Twilio call audio to your Render WebSocket endpoint
   twiml.connect().stream({
