@@ -1,30 +1,32 @@
-// routes/voice.js
 import express from "express";
-import { getEphemeralKey } from "../services/openai.js";
+import { xml } from "xmlbuilder2";
 
 const router = express.Router();
 
-// Endpoint Twilio will call when someone dials in
-router.post("/voice", async (req, res) => {
+/**
+ * Twilio webhook for inbound calls.
+ * Responds with <Connect><Stream> pointing to our WebSocket endpoint.
+ */
+router.post("/", async (req, res) => {
   try {
-    const { value: ephemeralKey } = await getEphemeralKey();
+    const wsUrl = `wss://${process.env.PUBLIC_DOMAIN}/realtime-conversation`;
 
-    const twiml = `
-      <Response>
-        <Connect>
-          <Stream url="wss://${process.env.RENDER_EXTERNAL_HOSTNAME}/realtime-conversation/.websocket">
-            <Parameter name="ephemeralKey" value="${ephemeralKey}" />
-          </Stream>
-        </Connect>
-      </Response>
-    `;
+    const twiml = xml({
+      Response: {
+        Connect: {
+          Stream: {
+            "@url": wsUrl,
+            "@track": "inbound_track"
+          }
+        }
+      }
+    });
 
     res.type("text/xml");
     res.send(twiml);
-    console.log("✅ Sent TwiML to Twilio");
   } catch (err) {
-    console.error("❌ Error generating TwiML:", err);
-    res.status(500).send("Error generating TwiML");
+    console.error("Error generating TwiML:", err);
+    res.status(500).send("Internal Server Error");
   }
 });
 
