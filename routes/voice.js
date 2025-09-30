@@ -1,30 +1,31 @@
+// routes/voice.js
 import express from "express";
-import twilio from "twilio";
-import { createEphemeralKey } from "../services/openai.js";
+import { getEphemeralKey } from "../services/openai.js";
 
 const router = express.Router();
-const VoiceResponse = twilio.twiml.VoiceResponse;
 
+// Endpoint Twilio will call when someone dials in
 router.post("/voice", async (req, res) => {
-  const ephemeralKey = await createEphemeralKey();
+  try {
+    const { value: ephemeralKey } = await getEphemeralKey();
 
-  const response = new VoiceResponse();
-  const connect = response.connect();
+    const twiml = `
+      <Response>
+        <Connect>
+          <Stream url="wss://${process.env.RENDER_EXTERNAL_HOSTNAME}/realtime-conversation/.websocket">
+            <Parameter name="ephemeralKey" value="${ephemeralKey}" />
+          </Stream>
+        </Connect>
+      </Response>
+    `;
 
-  // Force Twilio to send PCM16 audio @ 16kHz, mono
-  connect.stream({
-    url: `wss://${req.headers.host}/realtime-conversation`,
-    track: "inbound",
-    parameters: [
-      { name: "ephemeralKey", value: ephemeralKey },
-      { name: "audioFormat", value: "pcm16" } // <-- important
-    ]
-  });
-
-  console.log("✅ Sent TwiML to Twilio");
-
-  res.type("text/xml");
-  res.send(response.toString());
+    res.type("text/xml");
+    res.send(twiml);
+    console.log("✅ Sent TwiML to Twilio");
+  } catch (err) {
+    console.error("❌ Error generating TwiML:", err);
+    res.status(500).send("Error generating TwiML");
+  }
 });
 
 export default router;
