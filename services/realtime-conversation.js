@@ -1,7 +1,7 @@
 import fetch from "node-fetch";
 import WebSocket from "ws";
 
-// Simple linear resample PCM helper
+// Simple resample helper (8k → 16k)
 function resample8to16(buffer8k) {
   const inSamples = new Int16Array(buffer8k.buffer);
   const outSamples = new Int16Array(inSamples.length * 2);
@@ -12,7 +12,7 @@ function resample8to16(buffer8k) {
   return outSamples;
 }
 
-// PCM 16-bit to μ-law 8-bit (inline, no external package)
+// PCM16 → μ-law 8-bit
 function pcm16ToMuLaw8(pcm16) {
   const MULAW_MAX = 0x1fff;
   const MULAW_BIAS = 33;
@@ -47,7 +47,7 @@ export function setupRealtime(app) {
 
         // 1️⃣ Ephemeral key request
         if (data.type === "get-ephemeral-key") {
-          console.log("🔑 Request for ephemeral key from OpenAI...");
+          console.log("🔑 Requesting ephemeral key from OpenAI...");
           const resp = await fetch("https://api.openai.com/v1/realtime/sessions", {
             method: "POST",
             headers: {
@@ -62,8 +62,8 @@ export function setupRealtime(app) {
 
           const keyData = await resp.json();
           if (!keyData.client_secret?.value) {
+            console.error("❌ No ephemeral key returned:", keyData);
             ws.send(JSON.stringify({ type: "error", error: "No ephemeral key returned" }));
-            console.error("❌ OpenAI ephemeral key error:", keyData);
             return;
           }
 
@@ -82,22 +82,30 @@ export function setupRealtime(app) {
 
           openAIWs.on("message", (msg) => {
             const resp = JSON.parse(msg.toString());
+
             if (resp.type === "audio_chunk") {
-              // Convert OpenAI audio to μ-law 8kHz for Twilio
+              console.log("🔊 OpenAI sent audio_chunk");
               const pcm16 = new Int16Array(Buffer.from(resp.audio, "base64").buffer);
               const muLaw8 = pcm16ToMuLaw8(pcm16);
               ws.send(JSON.stringify({
                 type: "media",
                 media: Buffer.from(muLaw8).toString("base64")
               }));
+            } else if (resp.type === "response.message") {
+              console.log("💬 OpenAI text response:", resp.message?.content?.[0]?.text || "(no text)");
+            } else {
+              console.log("📩 OpenAI event:", resp.type);
             }
           });
+
+          openAIWs.on("close", () => console.log("⚠️ OpenAI Realtime closed"));
+          openAIWs.on("error", (err) => console.error("❌ OpenAI WS error:", err.message));
         }
 
         // 3️⃣ Twilio sends audio chunks
         if (data.type === "input_audio_buffer") {
           if (openAIWs && openAIWs.readyState === 1) {
-            // Resample 8k → 16k and forward
+            console.log("🎙️ Received audio from Twilio, forwarding to OpenAI...");
             const buffer8k = new Int16Array(Buffer.from(data.audio, "base64").buffer);
             const buffer16k = resample8to16(buffer8k);
             openAIWs.send(JSON.stringify({
@@ -107,9 +115,10 @@ export function setupRealtime(app) {
           }
         }
 
-        // 4️⃣ Text input messages (optional)
+        // 4️⃣ Text input passthrough (optional)
         if (data.type === "input_text") {
           if (openAIWs && openAIWs.readyState === 1) {
+            console.log("✍️ Forwarding text input to OpenAI:", data.text);
             openAIWs.send(JSON.stringify({
               type: "input_text",
               text: data.text,
@@ -118,7 +127,7 @@ export function setupRealtime(app) {
         }
 
       } catch (err) {
-        console.error("❌ WebSocket error:", err.message);
+        console.error("❌ Error handling WebSocket message:", err.message);
       }
     });
 
