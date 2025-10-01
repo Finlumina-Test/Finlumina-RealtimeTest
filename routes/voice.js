@@ -7,8 +7,12 @@ router.post("/incoming", (req, res) => {
   const VoiceResponse = twilio.twiml.VoiceResponse;
   const twiml = new VoiceResponse();
 
-  console.log("📞 Incoming call – connecting Twilio <Stream> to WebSocket...");
+  console.log("📞 Incoming call – creating Twilio <Stream>...");
 
+  // Introductory line before connecting to Realtime
+  twiml.say("Hello, you are now connected to Finlumina Vox. Starting real time conversation...");
+
+  // Connect Twilio call audio to your Render WebSocket endpoint
   twiml.connect().stream({
     url: `wss://${process.env.RENDER_EXTERNAL_HOSTNAME}/realtime`
   });
