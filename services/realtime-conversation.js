@@ -37,27 +37,32 @@ export function setupRealtime(app) {
   app.ws("/realtime", async (ws) => {
     console.log("✅ Twilio WebSocket connected → starting realtime conversation");
 
-    // 1️⃣ Get ephemeral client secret (use client_secrets, NOT sessions)
-    const resp = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
+    // 1️⃣ Get ephemeral client secret
+    const resp = await fetch("https://api.openai.com/v1/realtime/sessions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({}), // ✅ no model/voice here
+      body: JSON.stringify({
+        model: "gpt-4o-realtime-preview",
+        voice: "alloy",
+        modalities: ["audio", "text"],
+      }),
     });
 
     const keyData = await resp.json();
     console.log("🔑 OpenAI client secret response:", keyData);
 
-    const ephemeralKey = keyData.client_secret?.value;
+    // ✅ FIX: use keyData.value instead of keyData.client_secret?.value
+    const ephemeralKey = keyData.value;
     if (!ephemeralKey) {
       console.error("❌ No ephemeral key found, closing WebSocket");
       ws.close();
       return;
     }
 
-    // 2️⃣ Connect to OpenAI Realtime WS (model & voice go in URL)
+    // 2️⃣ Connect to OpenAI Realtime WS
     const openAIWs = new WebSocket(
       "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview&voice=alloy",
       { headers: { Authorization: `Bearer ${ephemeralKey}` } }
