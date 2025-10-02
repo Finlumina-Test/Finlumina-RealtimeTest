@@ -73,30 +73,46 @@ export function setupRealtime(app) {
     });
 
     openAIWs.on("message", (msg) => {
-      const resp = JSON.parse(msg.toString());
+      let event;
+      try {
+        event = JSON.parse(msg.toString());
+      } catch (err) {
+        console.error("❌ Failed to parse OpenAI message:", msg.toString(), err);
+        return;
+      }
 
-      switch (resp.type) {
+      if (event.type === "error") {
+        console.error("❌ OpenAI Realtime error:", JSON.stringify(event, null, 2));
+        return;
+      }
+
+      switch (event.type) {
         case "response.output_audio.delta":
-          const pcm16 = new Int16Array(Buffer.from(resp.audio, "base64").buffer);
+          const pcm16 = new Int16Array(Buffer.from(event.audio, "base64").buffer);
           const muLaw8 = pcm16ToMuLaw8(pcm16);
-          ws.send(JSON.stringify({ type: "media", media: Buffer.from(muLaw8).toString("base64") }));
+          ws.send(
+            JSON.stringify({
+              type: "media",
+              media: Buffer.from(muLaw8).toString("base64"),
+            })
+          );
           break;
 
         case "response.output_text.delta":
-          console.log("💬 Partial text:", resp.delta);
+          console.log("💬 Partial text:", event.delta);
           break;
 
         case "response.output_text.completed":
-          console.log("💬 Final text:", resp.text);
+          console.log("💬 Final text:", event.text);
           break;
 
         default:
-          console.log("📩 OpenAI event:", resp.type);
+          console.log("📩 OpenAI event:", event.type);
       }
     });
 
     openAIWs.on("error", (err) => {
-      console.error("📩 OpenAI event: error", err);
+      console.error("📩 OpenAI WebSocket transport error:", err);
     });
 
     // 3️⃣ Twilio → OpenAI audio
@@ -107,10 +123,12 @@ export function setupRealtime(app) {
           const buffer16k = new Int16Array(Buffer.from(data.audio, "base64").buffer);
           const buffer24k = resampleTo24k(buffer16k);
           console.log(`🎙️ Forwarding audio: ${buffer16k.length} → ${buffer24k.length}`);
-          openAIWs.send(JSON.stringify({
-            type: "input_audio_buffer",
-            audio: Buffer.from(buffer24k).toString("base64"),
-          }));
+          openAIWs.send(
+            JSON.stringify({
+              type: "input_audio_buffer",
+              audio: Buffer.from(buffer24k).toString("base64"),
+            })
+          );
         }
       } catch (err) {
         console.error("❌ Error parsing Twilio message:", err.message);
