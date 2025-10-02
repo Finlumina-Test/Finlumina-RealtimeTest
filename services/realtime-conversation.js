@@ -89,6 +89,10 @@ export function setupRealtime(app) {
           console.log("💬 Final text:", resp.text);
           break;
 
+        case "error": // 👈 Added: log full error payload
+          console.error("⚠️ OpenAI Error Event:", JSON.stringify(resp, null, 2));
+          break;
+
         default:
           console.log("📩 OpenAI event:", resp.type);
       }
