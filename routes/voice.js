@@ -3,19 +3,23 @@ import twilio from "twilio";
 
 const router = express.Router();
 
+// Incoming call webhook from Twilio
 router.post("/incoming", (req, res) => {
-  const VoiceResponse = twilio.twiml.VoiceResponse;
-  const twiml = new VoiceResponse();
-
   console.log("📞 Incoming call – creating Twilio <Stream>...");
 
-  // Introductory line before connecting to Realtime
-  twiml.say("Hello, you are now connected to Finlumina Vox. Starting real time conversation...");
+  const twiml = new twilio.twiml.VoiceResponse();
 
-  // Connect Twilio call audio to your Render WebSocket endpoint
-  twiml.connect().stream({
-    url: `wss://${process.env.RENDER_EXTERNAL_HOSTNAME}/realtime`
-  });
+  // Greeting with Google voice (instead of robotic default)
+  twiml.say(
+    {
+      voice: "Google.en-US-Wavenet-D" // You can change this to any Google/Amazon Polly voice
+    },
+    "Please wait while we connect your call to the AI voice assistant powered by the OpenAI Realtime API."
+  );
+
+  // Start realtime stream
+  const connect = twiml.connect();
+  connect.stream({ url: `${process.env.PUBLIC_SERVER_URL}/realtime-conversation` });
 
   res.type("text/xml");
   res.send(twiml.toString());
