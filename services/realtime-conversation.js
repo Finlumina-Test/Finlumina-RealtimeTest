@@ -35,14 +35,14 @@ export function setupRealtime(app) {
   app.ws("/realtime", async (ws) => {
     console.log("✅ Twilio WebSocket connected → starting realtime conversation");
 
-    // 1️⃣ Request a client secret (no model/voice here)
+    // 1️⃣ Request an ephemeral client secret (no model/voice here)
     const resp = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({}), // empty body, no params
+      body: JSON.stringify({}), // must be empty
     });
 
     const keyData = await resp.json();
@@ -54,11 +54,25 @@ export function setupRealtime(app) {
 
     const ephemeralKey = keyData.client_secret.value;
 
-    // 2️⃣ Connect with model + voice in query params
-    const openAIWs = new WebSocket(
-      "wss://api.openai.com/v1/realtime?model=gpt-realtime&voice=verse",
-      { headers: { Authorization: `Bearer ${ephemeralKey}` } }
-    );
+    // 2️⃣ Connect to OpenAI Realtime API
+    const openAIWs = new WebSocket("wss://api.openai.com/v1/realtime", {
+      headers: { Authorization: `Bearer ${ephemeralKey}` },
+    });
+
+    openAIWs.on("open", () => {
+      console.log("🔗 Connected to OpenAI Realtime API");
+
+      // 3️⃣ Send session setup with model + voice
+      openAIWs.send(
+        JSON.stringify({
+          type: "session.update",
+          session: {
+            model: "gpt-4o-realtime-preview-2024-12-17",
+            voice: "verse",
+          },
+        })
+      );
+    });
 
     // OpenAI → Twilio
     openAIWs.on("message", (msg) => {
@@ -68,7 +82,12 @@ export function setupRealtime(app) {
         case "response.output_audio.delta":
           const pcm16 = new Int16Array(Buffer.from(resp.audio, "base64").buffer);
           const muLaw8 = pcm16ToMuLaw8(pcm16);
-          ws.send(JSON.stringify({ type: "media", media: Buffer.from(muLaw8).toString("base64") }));
+          ws.send(
+            JSON.stringify({
+              type: "media",
+              media: Buffer.from(muLaw8).toString("base64"),
+            })
+          );
           break;
 
         case "response.output_text.delta":
@@ -97,10 +116,12 @@ export function setupRealtime(app) {
           const buffer8k = new Int16Array(Buffer.from(data.audio, "base64").buffer);
           const buffer16k = resample8to16(buffer8k);
           console.log(`🎙️ Forwarding audio: ${buffer8k.length} → ${buffer16k.length}`);
-          openAIWs.send(JSON.stringify({
-            type: "input_audio_buffer",
-            audio: Buffer.from(buffer16k).toString("base64"),
-          }));
+          openAIWs.send(
+            JSON.stringify({
+              type: "input_audio_buffer",
+              audio: Buffer.from(buffer16k).toString("base64"),
+            })
+          );
         }
       } catch (err) {
         console.error("❌ Error parsing Twilio message:", err.message);
