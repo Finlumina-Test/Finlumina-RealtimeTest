@@ -44,11 +44,7 @@ export function setupRealtime(app) {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        model: "gpt-4o-realtime-preview",
-        voice: "alloy",
-        modalities: ["audio", "text"],
-      }),
+      body: JSON.stringify({}) // ✅ no model/voice here anymore
     });
 
     const keyData = await resp.json();
@@ -62,7 +58,7 @@ export function setupRealtime(app) {
       return;
     }
 
-    // 2️⃣ Connect to OpenAI Realtime WS
+    // 2️⃣ Connect to OpenAI Realtime WS (this is where you set model/voice)
     const openAIWs = new WebSocket(
       "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview&voice=alloy",
       { headers: { Authorization: `Bearer ${ephemeralKey}` } }
