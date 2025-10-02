@@ -2,7 +2,7 @@
 import fetch from "node-fetch";
 import WebSocket from "ws";
 
-// Simple resample helper (8k → 16k)
+// Resample helper (8k → 16k)
 function resample8to16(buffer8k) {
   const inSamples = new Int16Array(buffer8k.buffer);
   const outSamples = new Int16Array(inSamples.length * 2);
@@ -48,7 +48,7 @@ export function setupRealtime(app) {
       try {
         const data = JSON.parse(msg);
 
-        // 1️⃣ Ephemeral key request
+        // Ephemeral key request
         if (data.type === "get-ephemeral-key") {
           console.log("🔑 Requesting ephemeral key from OpenAI...");
           const resp = await fetch("https://api.openai.com/v1/realtime/sessions", {
@@ -59,7 +59,7 @@ export function setupRealtime(app) {
             },
             body: JSON.stringify({
               model: "gpt-realtime",
-              voice: "verse", // voice choice
+              voice: "cedar",
             }),
           });
 
@@ -73,11 +73,9 @@ export function setupRealtime(app) {
           ws.send(JSON.stringify({ type: "ephemeral-key", data: keyData.client_secret.value }));
           console.log("✅ Ephemeral key sent to Twilio");
 
-          // 2️⃣ Connect to OpenAI Realtime
+          // Connect to OpenAI Realtime
           openAIWs = new WebSocket("wss://api.openai.com/v1/realtime?model=gpt-realtime", {
-            headers: {
-              Authorization: `Bearer ${keyData.client_secret.value}`,
-            },
+            headers: { Authorization: `Bearer ${keyData.client_secret.value}` },
           });
 
           openAIWs.on("open", () => console.log("✅ Connected to OpenAI Realtime"));
@@ -93,11 +91,10 @@ export function setupRealtime(app) {
                 console.log("💬 Final text:", resp.text);
                 break;
               case "response.output_audio.delta":
-                console.log(`🔊 Audio chunk received (${resp.audio.length} base64 chars)`);
+                console.log(`🔊 Audio chunk (${resp.audio.length} base64 chars)`);
                 {
                   const pcm16 = new Int16Array(Buffer.from(resp.audio, "base64").buffer);
                   const muLaw8 = pcm16ToMuLaw8(pcm16);
-
                   ws.send(JSON.stringify({
                     type: "media",
                     media: Buffer.from(muLaw8).toString("base64")
@@ -116,13 +113,13 @@ export function setupRealtime(app) {
           openAIWs.on("error", (err) => console.error("❌ OpenAI WS error:", err.message));
         }
 
-        // 3️⃣ Twilio sends audio chunks
+        // Twilio sends audio chunks
         if (data.type === "input_audio_buffer") {
           if (openAIWs && openAIWs.readyState === 1) {
             const buffer8k = new Int16Array(Buffer.from(data.audio, "base64").buffer);
             const buffer16k = resample8to16(buffer8k);
 
-            console.log(`🎙️ Forwarding audio → ${buffer8k.length} samples (8k) → ${buffer16k.length} samples (16k)`);
+            console.log(`🎙️ Forwarding audio: ${buffer8k.length} → ${buffer16k.length} samples`);
 
             openAIWs.send(JSON.stringify({
               type: "input_audio_buffer",
@@ -133,21 +130,18 @@ export function setupRealtime(app) {
           }
         }
 
-        // 4️⃣ Text passthrough (optional)
+        // Text passthrough
         if (data.type === "input_text") {
           if (openAIWs && openAIWs.readyState === 1) {
-            console.log("✍️ Forwarding text input:", data.text);
-            openAIWs.send(JSON.stringify({
-              type: "input_text",
-              text: data.text,
-            }));
+            console.log("✍️ Forwarding text:", data.text);
+            openAIWs.send(JSON.stringify({ type: "input_text", text: data.text }));
           } else {
             console.warn("⚠️ Dropping text: OpenAI WS not ready");
           }
         }
 
       } catch (err) {
-        console.error("❌ Error handling WebSocket message:", err.message);
+        console.error("❌ Error handling WS message:", err.message);
       }
     });
 
