@@ -1,3 +1,4 @@
+// services/realtime-conversation.js
 import fetch from "node-fetch";
 import WebSocket from "ws";
 
@@ -23,7 +24,8 @@ function pcm16ToMuLaw8(pcm16) {
     if (sample > MULAW_MAX) sample = MULAW_MAX;
     sample = sample + MULAW_BIAS;
     let exponent = 7;
-    for (let expMask = 0x4000; (sample & expMask) === 0 && exponent > 0; expMask >>= 1) exponent--;
+    for (let expMask = 0x4000; (sample & expMask) === 0 && exponent > 0; expMask >>= 1)
+      exponent--;
     let mantissa = (sample >> (exponent + 3)) & 0x0f;
     output[i] = ~(sign | (exponent << 4) | mantissa);
   }
@@ -34,53 +36,65 @@ export function setupRealtime(app) {
   app.ws("/realtime", async (ws) => {
     console.log("✅ Twilio WebSocket connected → starting realtime conversation");
 
-    // 🔑 Step 1: Request ephemeral key from OpenAI Realtime GA
-    const resp = await fetch("https://api.openai.com/v1/realtime/sessions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-realtime-preview-2024-12", // ✅ correct realtime GA model
-        voice: "alloy",
-        instructions: "Your knowledge cutoff is 2023-10. You are a helpful, witty, and friendly AI. Act like a human. Use a warm, engaging tone.",
-        audio: { input: { type: "audio/pcm", rate: 24000 }, output: { type: "audio/pcm", rate: 24000, voice: "alloy" } },
-      }),
-    });
+    // 🔑 Request ephemeral key (empty body)
+    let keyData;
+    try {
+      const resp = await fetch("https://api.openai.com/v1/realtime/sessions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({}) // ⚠️ no invalid params
+      });
+      keyData = await resp.json();
+      console.log("🔑 OpenAI client secret response:", keyData);
+    } catch (err) {
+      console.error("❌ Error fetching OpenAI ephemeral key:", err);
+      ws.close();
+      return;
+    }
 
-    const data = await resp.json();
-    console.log("🔑 OpenAI client secret response:", data);
-
-    // Ensure ephemeral key exists
-    const ephemeralKey = data.client_secret?.value || data.value;
-    if (!ephemeralKey) {
+    if (!keyData.client_secret?.value) {
       console.error("❌ No ephemeral key found, closing WebSocket");
       ws.close();
       return;
     }
 
-    // 🔗 Step 2: Connect to OpenAI Realtime WS
+    const ephemeralKey = keyData.client_secret.value;
+
+    // Connect to OpenAI Realtime WS with model + voice
     const openAIWs = new WebSocket(
-      `wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12&voice=alloy`,
+      `wss://api.openai.com/v1/realtime?model=gpt-realtime&voice=alloy`,
       { headers: { Authorization: `Bearer ${ephemeralKey}` } }
     );
 
-    // OpenAI → Twilio
+    openAIWs.on("open", () => {
+      console.log("🔗 Connected to OpenAI Realtime WebSocket");
+    });
+
     openAIWs.on("message", (msg) => {
       const resp = JSON.parse(msg.toString());
+
       switch (resp.type) {
         case "response.output_audio.delta":
           const pcm16 = new Int16Array(Buffer.from(resp.audio, "base64").buffer);
           const muLaw8 = pcm16ToMuLaw8(pcm16);
           ws.send(JSON.stringify({ type: "media", media: Buffer.from(muLaw8).toString("base64") }));
           break;
+
         case "response.output_text.delta":
           console.log("💬 Partial text:", resp.delta);
           break;
+
         case "response.output_text.completed":
           console.log("💬 Final text:", resp.text);
           break;
+
+        case "session.created":
+          console.log("📩 OpenAI event: session.created");
+          break;
+
         default:
           console.log("📩 OpenAI event:", resp.type);
       }
@@ -90,17 +104,17 @@ export function setupRealtime(app) {
       console.error("❌ OpenAI Realtime error:", err);
     });
 
-    // Twilio → OpenAI
     ws.on("message", (msg) => {
       try {
         const data = JSON.parse(msg);
+
         if (data.type === "input_audio_buffer" && openAIWs.readyState === 1) {
           const buffer8k = new Int16Array(Buffer.from(data.audio, "base64").buffer);
           const buffer16k = resample8to16(buffer8k);
           console.log(`🎙️ Forwarding audio: ${buffer8k.length} → ${buffer16k.length}`);
           openAIWs.send(JSON.stringify({
             type: "input_audio_buffer",
-            audio: Buffer.from(buffer16k).toString("base64"),
+            audio: Buffer.from(buffer16k).toString("base64")
           }));
         }
       } catch (err) {
