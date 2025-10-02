@@ -2,6 +2,7 @@
 import fetch from "node-fetch";
 import WebSocket from "ws";
 
+// 🔄 Simple resample helper (8k → 16k)
 function resample8to16(buffer8k) {
   const inSamples = new Int16Array(buffer8k.buffer);
   const outSamples = new Int16Array(inSamples.length * 2);
@@ -12,6 +13,7 @@ function resample8to16(buffer8k) {
   return outSamples;
 }
 
+// 🎵 PCM16 → μ-law 8-bit (Twilio requirement)
 function pcm16ToMuLaw8(pcm16) {
   const MULAW_MAX = 0x1fff;
   const MULAW_BIAS = 33;
@@ -35,56 +37,50 @@ export function setupRealtime(app) {
   app.ws("/realtime", async (ws) => {
     console.log("✅ Twilio WebSocket connected → starting realtime conversation");
 
-    // 🔑 Create a realtime session with OpenAI
-    const resp = await fetch("https://api.openai.com/v1/realtime/sessions", {
+    // 1️⃣ Create a realtime *client secret* (short-lived key) with your real API key
+    const resp = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, // your real key stays here
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "gpt-realtime-preview-2024-12-17", // 🔥 use full model name
+        model: "gpt-realtime",
         voice: "verse",
       }),
     });
 
     const keyData = await resp.json();
     if (!keyData.client_secret?.value) {
-      console.error("❌ Failed to get OpenAI session key:", keyData);
+      console.error("❌ Failed to get OpenAI client secret:", keyData);
       ws.close();
       return;
     }
 
-    const openAIWs = new WebSocket(
-      "wss://api.openai.com/v1/realtime?model=gpt-realtime-preview-2024-12-17",
-      { headers: { Authorization: `Bearer ${keyData.client_secret.value}` } }
-    );
+    const ephemeralKey = keyData.client_secret.value;
+
+    // 2️⃣ Connect to OpenAI Realtime with the ephemeral key
+    const openAIWs = new WebSocket("wss://api.openai.com/v1/realtime?model=gpt-realtime", {
+      headers: { Authorization: `Bearer ${ephemeralKey}` },
+    });
 
     // OpenAI → Twilio
     openAIWs.on("message", (msg) => {
       const resp = JSON.parse(msg.toString());
 
-      if (resp.type === "error") {
-        console.error("❌ OpenAI Realtime error:", JSON.stringify(resp, null, 2));
-        return;
-      }
-
       switch (resp.type) {
         case "response.output_audio.delta":
-          const pcm16 = new Int16Array(Buffer.from(resp.delta, "base64").buffer);
+          const pcm16 = new Int16Array(Buffer.from(resp.audio, "base64").buffer);
           const muLaw8 = pcm16ToMuLaw8(pcm16);
-          ws.send(JSON.stringify({
-            event: "media",
-            media: Buffer.from(muLaw8).toString("base64"),
-          }));
+          ws.send(JSON.stringify({ type: "media", media: Buffer.from(muLaw8).toString("base64") }));
           break;
 
         case "response.output_text.delta":
           console.log("💬 Partial text:", resp.delta);
           break;
 
-        case "response.completed":
-          console.log("💬 Final response:", JSON.stringify(resp, null, 2));
+        case "response.output_text.completed":
+          console.log("💬 Final text:", resp.text);
           break;
 
         default:
@@ -92,24 +88,22 @@ export function setupRealtime(app) {
       }
     });
 
+    openAIWs.on("error", (err) => {
+      console.error("❌ OpenAI Realtime error:", err);
+    });
+
     // Twilio → OpenAI
     ws.on("message", (msg) => {
       try {
         const data = JSON.parse(msg);
 
-        if (data.event === "media" && openAIWs.readyState === 1) {
-          const buffer8k = new Int16Array(Buffer.from(data.media, "base64").buffer);
+        if (data.type === "input_audio_buffer" && openAIWs.readyState === 1) {
+          const buffer8k = new Int16Array(Buffer.from(data.audio, "base64").buffer);
           const buffer16k = resample8to16(buffer8k);
-
           openAIWs.send(JSON.stringify({
-            type: "input_audio_buffer.append",
+            type: "input_audio_buffer",
             audio: Buffer.from(buffer16k).toString("base64"),
           }));
-        }
-
-        if (data.event === "mark") {
-          openAIWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-          openAIWs.send(JSON.stringify({ type: "response.create" }));
         }
       } catch (err) {
         console.error("❌ Error parsing Twilio message:", err.message);
