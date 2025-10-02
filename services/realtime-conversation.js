@@ -38,7 +38,7 @@ export function setupRealtime(app) {
     console.log("✅ Twilio WebSocket connected → starting realtime conversation");
 
     // 1️⃣ Get ephemeral client secret
-    const resp = await fetch("https://api.openai.com/v1/realtime/sessions", {
+    const resp = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
