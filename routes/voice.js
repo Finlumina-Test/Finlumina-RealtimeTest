@@ -9,11 +9,8 @@ router.post("/incoming", (req, res) => {
 
   const twiml = new twilio.twiml.VoiceResponse();
 
-  // Greeting with Google voice
-  twiml.say(
-    { voice: "Google.en-US-Wavenet-D" },
-    "Testing Finlumina Vox."
-  );
+  // Optional: short greeting
+  twiml.say({ voice: "Google.en-US-Wavenet-D" }, "Testing Finlumina Vox.");
 
   // Build the realtime WebSocket URL
   const wsUrl = `wss://${process.env.RENDER_EXTERNAL_HOSTNAME}/realtime`;
@@ -23,6 +20,7 @@ router.post("/incoming", (req, res) => {
   const connect = twiml.connect();
   connect.stream({ url: wsUrl });
 
+  // ✅ Only send XML back — nothing else, no JSON, no logs
   res.type("text/xml");
   res.send(twiml.toString());
 });
