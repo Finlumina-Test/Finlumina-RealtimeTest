@@ -14,7 +14,7 @@ router.post("/incoming", (req, res) => {
     {
       voice: "Google.en-US-Wavenet-D" // You can change this to any Google/Amazon Polly voice
     },
-    "Please wait while we connect your call to the AI voice assistant powered by the OpenAI Realtime API."
+    "Testing Finlumina Vox."
   );
 
   // Start realtime stream
