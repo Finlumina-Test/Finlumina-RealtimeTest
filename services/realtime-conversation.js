@@ -24,7 +24,12 @@ function pcm16ToMuLaw8(pcm16) {
     if (sample > MULAW_MAX) sample = MULAW_MAX;
     sample = sample + MULAW_BIAS;
     let exponent = 7;
-    for (let expMask = 0x4000; (sample & expMask) === 0 && exponent > 0; expMask >>= 1) exponent--;
+    for (
+      let expMask = 0x4000;
+      (sample & expMask) === 0 && exponent > 0;
+      expMask >>= 1
+    )
+      exponent--;
     let mantissa = (sample >> (exponent + 3)) & 0x0f;
     output[i] = ~(sign | (exponent << 4) | mantissa);
   }
@@ -35,60 +40,47 @@ export function setupRealtime(app) {
   app.ws("/realtime", async (ws) => {
     console.log("✅ Twilio WebSocket connected → starting realtime conversation");
 
-    // 1️⃣ Request an ephemeral client secret (no model/voice here)
+    // 1️⃣ Request a client secret (no model/voice here)
     const resp = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({}), // must be empty
+      body: JSON.stringify({}), // empty body
     });
 
     const keyData = await resp.json();
-    if (!keyData.client_secret?.value) {
+
+    // ✅ Only treat it as error if `error` exists
+    if (keyData.error) {
       console.error("❌ Failed to get OpenAI client secret:", keyData);
       ws.close();
       return;
     }
 
     const ephemeralKey = keyData.client_secret.value;
+    console.log("🔑 Got ephemeral key:", ephemeralKey);
 
-    // 2️⃣ Connect to OpenAI Realtime API
-    const openAIWs = new WebSocket("wss://api.openai.com/v1/realtime", {
-      headers: { Authorization: `Bearer ${ephemeralKey}` },
-    });
-
-    openAIWs.on("open", () => {
-      console.log("🔗 Connected to OpenAI Realtime API");
-
-      // 3️⃣ Send session setup with model + voice
-      openAIWs.send(
-        JSON.stringify({
-          type: "session.update",
-          session: {
-            model: "gpt-4o-realtime-preview-2024-12-17",
-            voice: "verse",
-          },
-        })
-      );
-    });
+    // 2️⃣ Connect with model + voice in query params
+    const openAIWs = new WebSocket(
+      "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview&voice=verse",
+      { headers: { Authorization: `Bearer ${ephemeralKey}` } }
+    );
 
     // OpenAI → Twilio
     openAIWs.on("message", (msg) => {
       const resp = JSON.parse(msg.toString());
 
       switch (resp.type) {
-        case "response.output_audio.delta":
+        case "response.output_audio.delta": {
           const pcm16 = new Int16Array(Buffer.from(resp.audio, "base64").buffer);
           const muLaw8 = pcm16ToMuLaw8(pcm16);
           ws.send(
-            JSON.stringify({
-              type: "media",
-              media: Buffer.from(muLaw8).toString("base64"),
-            })
+            JSON.stringify({ type: "media", media: Buffer.from(muLaw8).toString("base64") })
           );
           break;
+        }
 
         case "response.output_text.delta":
           console.log("💬 Partial text:", resp.delta);
