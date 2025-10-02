@@ -12,14 +12,14 @@ router.post("/incoming", (req, res) => {
   // Greeting with Google voice (instead of robotic default)
   twiml.say(
     {
-      voice: "Google.en-US-Wavenet-D" // You can change this to any Google/Amazon Polly voice
+      voice: "Google.en-US-Wavenet-D" // changeable to any Polly/Google voice
     },
-    "Testing Finlumina Vox."
+    "Testing FinLumina-Vox."
   );
 
-  // Start realtime stream
+  // Start realtime stream (hardcoded to deployed Render URL)
   const connect = twiml.connect();
-  connect.stream({ url: `${process.env.PUBLIC_SERVER_URL}/realtime-conversation` });
+  connect.stream({ url: "wss://finlumina-vox.onrender.com/realtime" });
 
   res.type("text/xml");
   res.send(twiml.toString());
