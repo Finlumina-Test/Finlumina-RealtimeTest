@@ -54,8 +54,8 @@ export function setupRealtime(app) {
     const keyData = await resp.json();
     console.log("🔑 OpenAI client secret response:", keyData);
 
-    // ✅ FIX: use keyData.value instead of keyData.client_secret?.value
-    const ephemeralKey = keyData.value;
+    // ✅ FIX: Use client_secret.value
+    const ephemeralKey = keyData.client_secret?.value;
     if (!ephemeralKey) {
       console.error("❌ No ephemeral key found, closing WebSocket");
       ws.close();
