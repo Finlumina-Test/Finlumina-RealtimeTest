@@ -11,15 +11,17 @@ router.post("/incoming", (req, res) => {
 
   // Greeting with Google voice (instead of robotic default)
   twiml.say(
-    {
-      voice: "Google.en-US-Wavenet-D" // changeable to any Polly/Google voice
-    },
-    "Testing FinLumina-Vox."
+    { voice: "Google.en-US-Wavenet-D" },
+    "Testing Finlumina Vox."
   );
 
-  // Start realtime stream (hardcoded to deployed Render URL)
+  // Build the realtime WebSocket URL
+  const wsUrl = `wss://${process.env.RENDER_EXTERNAL_HOSTNAME}/realtime`;
+  console.log(`🔗 Sending Twilio Stream URL: ${wsUrl}`);
+
+  // Start realtime stream
   const connect = twiml.connect();
-  connect.stream({ url: "wss://finlumina-vox.onrender.com/realtime" });
+  connect.stream({ url: wsUrl });
 
   res.type("text/xml");
   res.send(twiml.toString());
