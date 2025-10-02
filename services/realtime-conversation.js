@@ -37,39 +37,32 @@ export function setupRealtime(app) {
   app.ws("/realtime", async (ws) => {
     console.log("✅ Twilio WebSocket connected → starting realtime conversation");
 
-    // 1️⃣ Get ephemeral client secret (GA endpoint - body intentionally empty)
+    // 1️⃣ Get ephemeral client secret
     const resp = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({}), // must be empty for GA client_secrets
+      body: JSON.stringify({
+        model: "gpt-4o-realtime-preview",
+        voice: "alloy",
+        modalities: ["audio", "text"],
+      }),
     });
 
     const keyData = await resp.json();
     console.log("🔑 OpenAI client secret response:", keyData);
 
-    // ====== ONLY CHANGE: robustly accept multiple response shapes ==========
-    // Accept whichever OpenAI returned:
-    // - keyData.client_secret?.value  (older/one shape)
-    // - keyData.value                  (top-level 'value')
-    // - keyData.session?.client_secret?.value
-    // - keyData.session?.value
-    const ephemeralKey =
-      keyData?.client_secret?.value ||
-      keyData?.value ||
-      keyData?.session?.client_secret?.value ||
-      keyData?.session?.value;
-    // =======================================================================
-
+    // ✅ FIX: Use client_secret.value
+    const ephemeralKey = keyData.client_secret?.value;
     if (!ephemeralKey) {
       console.error("❌ No ephemeral key found, closing WebSocket");
       ws.close();
       return;
     }
 
-    // 2️⃣ Connect to OpenAI Realtime WS (model & voice in the URL)
+    // 2️⃣ Connect to OpenAI Realtime WS
     const openAIWs = new WebSocket(
       "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview&voice=alloy",
       { headers: { Authorization: `Bearer ${ephemeralKey}` } }
@@ -77,6 +70,17 @@ export function setupRealtime(app) {
 
     openAIWs.on("open", () => {
       console.log("🔗 Connected to OpenAI Realtime WebSocket");
+
+      // 👉 Force model to speak something back
+      openAIWs.send(
+        JSON.stringify({
+          type: "response.create",
+          response: {
+            modalities: ["audio", "text"],
+            instructions: "Hello! This is Finlumina Vox connected successfully.",
+          },
+        })
+      );
     });
 
     openAIWs.on("message", (msg) => {
@@ -94,7 +98,7 @@ export function setupRealtime(app) {
       }
 
       switch (event.type) {
-        case "response.output_audio.delta": {
+        case "response.output_audio.delta":
           const pcm16 = new Int16Array(Buffer.from(event.audio, "base64").buffer);
           const muLaw8 = pcm16ToMuLaw8(pcm16);
           ws.send(
@@ -104,7 +108,6 @@ export function setupRealtime(app) {
             })
           );
           break;
-        }
 
         case "response.output_text.delta":
           console.log("💬 Partial text:", event.delta);
