@@ -3,19 +3,25 @@ import twilio from "twilio";
 
 const router = express.Router();
 
+// Incoming call webhook from Twilio
 router.post("/incoming", (req, res) => {
   console.log("📞 Incoming call – creating Twilio <Stream>...");
 
   const twiml = new twilio.twiml.VoiceResponse();
 
-  // Start realtime stream first
+  // Greeting with Google voice
+  twiml.say(
+    { voice: "Google.en-US-Wavenet-D" },
+    "Testing Finlumina Vox."
+  );
+
+  // Build the realtime WebSocket URL
   const wsUrl = `wss://${process.env.RENDER_EXTERNAL_HOSTNAME}/realtime`;
   console.log(`🔗 Sending Twilio Stream URL: ${wsUrl}`);
+
+  // Start realtime stream
   const connect = twiml.connect();
   connect.stream({ url: wsUrl });
-
-  // Optional: send greeting as a <Say> **inside stream** if needed
-  // Otherwise, let AI send greeting so Twilio call stays active
 
   res.type("text/xml");
   res.send(twiml.toString());
