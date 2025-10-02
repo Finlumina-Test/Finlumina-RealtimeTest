@@ -1,3 +1,4 @@
+// services/realtime-conversation.js
 import fetch from "node-fetch";
 import WebSocket from "ws";
 
@@ -39,7 +40,7 @@ function pcm16ToMuLaw8(pcm16) {
 
 export function setupRealtime(app) {
   app.ws("/realtime", (ws) => {
-    console.log("✅ Twilio WebSocket connected");
+    console.log("✅ Twilio WebSocket connected → starting realtime conversation");
 
     let openAIWs;
 
@@ -58,7 +59,7 @@ export function setupRealtime(app) {
             },
             body: JSON.stringify({
               model: "gpt-realtime",
-              voice: "cedar",
+              voice: "verse", // voice choice
             }),
           });
 
@@ -92,10 +93,11 @@ export function setupRealtime(app) {
                 console.log("💬 Final text:", resp.text);
                 break;
               case "response.output_audio.delta":
-                console.log(`🔊 Audio chunk received (${resp.audio.length} bytes)`);
+                console.log(`🔊 Audio chunk received (${resp.audio.length} base64 chars)`);
                 {
                   const pcm16 = new Int16Array(Buffer.from(resp.audio, "base64").buffer);
                   const muLaw8 = pcm16ToMuLaw8(pcm16);
+
                   ws.send(JSON.stringify({
                     type: "media",
                     media: Buffer.from(muLaw8).toString("base64")
@@ -106,7 +108,6 @@ export function setupRealtime(app) {
                 console.log("✅ Response completed");
                 break;
               default:
-                // Keep this minimal to avoid spam
                 console.log("📩 OpenAI event:", resp.type);
             }
           });
@@ -121,23 +122,27 @@ export function setupRealtime(app) {
             const buffer8k = new Int16Array(Buffer.from(data.audio, "base64").buffer);
             const buffer16k = resample8to16(buffer8k);
 
-            console.log(`🎙️ Forwarding audio from Twilio (${buffer8k.length} samples)`);
+            console.log(`🎙️ Forwarding audio → ${buffer8k.length} samples (8k) → ${buffer16k.length} samples (16k)`);
 
             openAIWs.send(JSON.stringify({
               type: "input_audio_buffer",
               audio: Buffer.from(buffer16k).toString("base64"),
             }));
+          } else {
+            console.warn("⚠️ Dropping audio: OpenAI WS not ready");
           }
         }
 
         // 4️⃣ Text passthrough (optional)
         if (data.type === "input_text") {
           if (openAIWs && openAIWs.readyState === 1) {
-            console.log("✍️ Forwarding text input to OpenAI:", data.text);
+            console.log("✍️ Forwarding text input:", data.text);
             openAIWs.send(JSON.stringify({
               type: "input_text",
               text: data.text,
             }));
+          } else {
+            console.warn("⚠️ Dropping text: OpenAI WS not ready");
           }
         }
 
