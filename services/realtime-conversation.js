@@ -2,7 +2,6 @@
 import fetch from "node-fetch";
 import WebSocket from "ws";
 
-// 🔄 Simple resample helper (8k → 16k)
 function resample8to16(buffer8k) {
   const inSamples = new Int16Array(buffer8k.buffer);
   const outSamples = new Int16Array(inSamples.length * 2);
@@ -13,7 +12,6 @@ function resample8to16(buffer8k) {
   return outSamples;
 }
 
-// 🎵 PCM16 → μ-law 8-bit (Twilio requirement)
 function pcm16ToMuLaw8(pcm16) {
   const MULAW_MAX = 0x1fff;
   const MULAW_BIAS = 33;
@@ -37,17 +35,14 @@ export function setupRealtime(app) {
   app.ws("/realtime", async (ws) => {
     console.log("✅ Twilio WebSocket connected → starting realtime conversation");
 
-    // 1️⃣ Create a realtime *client secret* (short-lived key) with your real API key
+    // 1️⃣ Request a client secret (no model/voice here)
     const resp = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, // your real key stays here
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        model: "gpt-realtime",
-        voice: "verse",
-      }),
+      body: JSON.stringify({}), // empty body, no params
     });
 
     const keyData = await resp.json();
@@ -59,10 +54,11 @@ export function setupRealtime(app) {
 
     const ephemeralKey = keyData.client_secret.value;
 
-    // 2️⃣ Connect to OpenAI Realtime with the ephemeral key
-    const openAIWs = new WebSocket("wss://api.openai.com/v1/realtime?model=gpt-realtime", {
-      headers: { Authorization: `Bearer ${ephemeralKey}` },
-    });
+    // 2️⃣ Connect with model + voice in query params
+    const openAIWs = new WebSocket(
+      "wss://api.openai.com/v1/realtime?model=gpt-realtime&voice=verse",
+      { headers: { Authorization: `Bearer ${ephemeralKey}` } }
+    );
 
     // OpenAI → Twilio
     openAIWs.on("message", (msg) => {
@@ -100,6 +96,7 @@ export function setupRealtime(app) {
         if (data.type === "input_audio_buffer" && openAIWs.readyState === 1) {
           const buffer8k = new Int16Array(Buffer.from(data.audio, "base64").buffer);
           const buffer16k = resample8to16(buffer8k);
+          console.log(`🎙️ Forwarding audio: ${buffer8k.length} → ${buffer16k.length}`);
           openAIWs.send(JSON.stringify({
             type: "input_audio_buffer",
             audio: Buffer.from(buffer16k).toString("base64"),
