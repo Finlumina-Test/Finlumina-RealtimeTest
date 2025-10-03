@@ -9,13 +9,15 @@ function resampleTo24k(buffer8k) {
   if (inLen === 0) return new Int16Array(0);
   const outLen = Math.floor(inLen * 24 / 8);
   const outSamples = new Int16Array(outLen);
+
   for (let i = 0; i < outLen; i++) {
     const srcPos = (i * (inLen - 1)) / Math.max(outLen - 1, 1);
     const idx = Math.floor(srcPos);
     const frac = srcPos - idx;
     const s1 = inSamples[idx] || 0;
     const s2 = inSamples[Math.min(idx + 1, inLen - 1)] || 0;
-    outSamples[i] = Math.max(-32768, Math.min(32767, Math.round((1 - frac) * s1 + frac * s2)));
+    const interpolated = (1 - frac) * s1 + frac * s2;
+    outSamples[i] = Math.max(-32768, Math.min(32767, Math.round(interpolated)));
   }
   return outSamples;
 }
@@ -27,13 +29,15 @@ function resample24kTo8k(buffer24k) {
   if (inLen === 0) return new Int16Array(0);
   const outLen = Math.floor(inLen * 8 / 24);
   const outSamples = new Int16Array(outLen);
+
   for (let i = 0; i < outLen; i++) {
     const srcPos = (i * (inLen - 1)) / Math.max(outLen - 1, 1);
     const idx = Math.floor(srcPos);
     const frac = srcPos - idx;
     const s1 = inSamples[idx] || 0;
     const s2 = inSamples[Math.min(idx + 1, inLen - 1)] || 0;
-    outSamples[i] = Math.max(-32768, Math.min(32767, Math.round((1 - frac) * s1 + frac * s2)));
+    const interpolated = (1 - frac) * s1 + frac * s2;
+    outSamples[i] = Math.max(-32768, Math.min(32767, Math.round(interpolated)));
   }
   return outSamples;
 }
@@ -83,8 +87,9 @@ export function setupRealtime(app) {
       },
       body: JSON.stringify({}),
     });
+
     const keyData = await resp.json();
-    console.log("🔑 OpenAI client secret response received");
+    console.log("🔑 OpenAI ephemeral key received");
 
     const ephemeralKey =
       keyData?.client_secret?.value ||
@@ -107,7 +112,7 @@ export function setupRealtime(app) {
     openAIWs.on("open", () => {
       console.log("🔗 Connected to OpenAI Realtime WebSocket");
 
-      // Force instant TTS immediately on connection
+      // Force greeting instantly
       openAIWs.send(
         JSON.stringify({
           type: "response.create",
@@ -123,20 +128,19 @@ export function setupRealtime(app) {
       let event;
       try {
         event = JSON.parse(msg.toString());
-      } catch (err) {
-        console.error("❌ Failed to parse OpenAI message");
+      } catch {
         return;
       }
 
       if (event.type === "error") {
-        console.error("❌ OpenAI error:", event.error?.message || event);
+        console.error("❌ OpenAI error:", event.error?.message || "Unknown error");
         return;
       }
 
       switch (event.type) {
         case "response.output_audio.delta": {
           const audioB64 = extractAudioBase64(event);
-          if (!audioB64) return;
+          if (!audioB64) break;
 
           try {
             const pcm24 = new Int16Array(Buffer.from(audioB64, "base64").buffer);
@@ -149,18 +153,19 @@ export function setupRealtime(app) {
                 media: { payload: Buffer.from(muLaw8).toString("base64") },
               })
             );
-          } catch (err) {
-            console.error("❌ Error processing OpenAI audio chunk");
+          } catch {
+            console.error("❌ Error processing audio chunk");
           }
           break;
         }
 
         case "response.output_text.delta":
-          console.log("💬 Partial text received");
+          // Non-spammy partial text log
+          console.log("💬 OpenAI speaking…");
           break;
 
         case "response.output_text.completed":
-          console.log("💬 Final text received");
+          console.log("💬 OpenAI finished speaking");
           break;
 
         case "response.done":
@@ -168,15 +173,16 @@ export function setupRealtime(app) {
           break;
 
         default:
-          console.log("📩 OpenAI event:", event.type);
+          break;
       }
     });
 
     openAIWs.on("error", (err) => {
-      console.error("📩 OpenAI WebSocket transport error");
+      console.error("❌ OpenAI WebSocket transport error:", err.message);
     });
 
     // 3️⃣ Twilio → OpenAI audio
+    let forwardedChunkCount = 0;
     ws.on("message", (msg) => {
       try {
         const data = typeof msg === "string" ? JSON.parse(msg) : msg;
@@ -186,7 +192,10 @@ export function setupRealtime(app) {
           const pcm8 = new Int16Array(buffer8k.buffer, buffer8k.byteOffset, buffer8k.length / 2);
           const buffer24k = resampleTo24k(pcm8);
 
-          console.log(`🎙️ Forwarding audio: ${pcm8.length} → ${buffer24k.length}`);
+          forwardedChunkCount++;
+          if (forwardedChunkCount % 10 === 0) {
+            console.log(`🎙️ Forwarded audio chunk #${forwardedChunkCount}`);
+          }
 
           openAIWs.send(
             JSON.stringify({
@@ -198,14 +207,11 @@ export function setupRealtime(app) {
 
         if (data.event === "stop") {
           openAIWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-          openAIWs.send(
-            JSON.stringify({
-              type: "response.create",
-            })
-          );
+          openAIWs.send(JSON.stringify({ type: "response.create" }));
+          forwardedChunkCount = 0;
         }
-      } catch (err) {
-        console.error("❌ Error parsing Twilio message");
+      } catch {
+        console.error("❌ Error parsing Twilio audio message");
       }
     });
 
