@@ -61,7 +61,7 @@ function pcm16ToMuLaw8(pcm16) {
   return output;
 }
 
-// Try many possible places OpenAI might put the audio blob
+// Extract audio base64 from event
 function extractAudioBase64(event) {
   if (!event) return null;
   if (typeof event.audio === "string") return event.audio;
@@ -88,8 +88,6 @@ function extractAudioBase64(event) {
       }
     }
   }
-
-  // no audio found
   return null;
 }
 
@@ -97,7 +95,7 @@ export function setupRealtime(app) {
   app.ws("/realtime", async (ws) => {
     console.log("✅ Twilio WebSocket connected → starting realtime conversation");
 
-    // 1️⃣ Get ephemeral client secret (GA client_secrets)
+    // 1️⃣ Get ephemeral client secret
     const resp = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
       method: "POST",
       headers: {
@@ -122,7 +120,7 @@ export function setupRealtime(app) {
       return;
     }
 
-    // 2️⃣ Connect to OpenAI Realtime WS (model & voice in URL)
+    // 2️⃣ Connect to OpenAI Realtime WS
     const openAIWs = new WebSocket(
       "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview&voice=alloy",
       { headers: { Authorization: `Bearer ${ephemeralKey}` } }
@@ -131,12 +129,12 @@ export function setupRealtime(app) {
     openAIWs.on("open", () => {
       console.log("🔗 Connected to OpenAI Realtime WebSocket");
 
-      // Minimal: create a response to verify audio path
+      // 👇 FORCE GREETING RIGHT AWAY
       openAIWs.send(
         JSON.stringify({
           type: "response.create",
           response: {
-            instructions: "Hello! This is Finlumina Vox connected successfully.",
+            instructions: "Hello! This is Finlumina Vox speaking instantly as the call connects.",
           },
         })
       );
@@ -158,7 +156,6 @@ export function setupRealtime(app) {
 
       switch (event.type) {
         case "response.output_audio.delta": {
-          // attempt to find audio in multiple possible fields
           const audioB64 = extractAudioBase64(event);
           if (!audioB64) {
             console.log("📩 OpenAI event: response.output_audio.delta (no audio field)");
@@ -166,17 +163,13 @@ export function setupRealtime(app) {
           }
 
           try {
-            // OpenAI audio is PCM16 @ 24kHz (base64)
             const pcm24 = new Int16Array(Buffer.from(audioB64, "base64").buffer);
-
-            // Resample 24k -> 8k for Twilio then μ-law
             const pcm8 = resample24kTo8k(pcm24);
             const muLaw8 = pcm16ToMuLaw8(pcm8);
 
-            // Send to Twilio stream
             ws.send(
               JSON.stringify({
-                type: "media",
+                event: "media", // Twilio expects this
                 media: Buffer.from(muLaw8).toString("base64"),
               })
             );
@@ -187,11 +180,8 @@ export function setupRealtime(app) {
         }
 
         case "response.output_audio_transcript.delta":
-          // log the transcript content if present
           if (event.delta) {
             console.log("📝 Transcript chunk:", JSON.stringify(event.delta));
-          } else {
-            console.log("📩 OpenAI event: response.output_audio_transcript.delta (no delta)");
           }
           break;
 
@@ -225,10 +215,7 @@ export function setupRealtime(app) {
       try {
         const data = JSON.parse(msg);
         if (data.type === "input_audio_buffer" && openAIWs.readyState === 1) {
-          // Twilio Media Stream gives base64 PCM16 LE at 8000 Hz
           const buffer8k = new Int16Array(Buffer.from(data.audio, "base64").buffer);
-
-          // Upsample 8k -> 24k
           const buffer24k = resampleTo24k(buffer8k);
 
           console.log(`🎙️ Forwarding audio: ${buffer8k.length} → ${buffer24k.length}`);
