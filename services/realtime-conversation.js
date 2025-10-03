@@ -131,14 +131,14 @@ export function setupRealtime(app) {
 
       // 👇 FORCE GREETING RIGHT AWAY
       openAIWs.send(
-        JSON.stringify({
-          type: "response.create",
-          response: {
-            instructions: "Hello! This is Finlumina Vox speaking instantly as the call connects.",
-          },
-        })
-      );
-    });
+  JSON.stringify({
+    type: "response.create",
+    response: {
+      modalities: ["audio", "text"],   // 👈 force audio generation
+      instructions: "Hello! This is Finlumina Vox speaking instantly as the call connects.",
+    },
+  })
+);
 
     openAIWs.on("message", (msg) => {
       let event;
