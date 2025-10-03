@@ -61,7 +61,7 @@ function pcm16ToMuLaw8(pcm16) {
   return output;
 }
 
-// Extract audio base64 from event
+// Extract audio base64 from event (robust)
 function extractAudioBase64(event) {
   if (!event) return null;
   if (typeof event.audio === "string") return event.audio;
@@ -95,17 +95,41 @@ export function setupRealtime(app) {
   app.ws("/realtime", async (ws) => {
     console.log("✅ Twilio WebSocket connected → starting realtime conversation");
 
-    // 1️⃣ Get ephemeral client secret
-    const resp = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({}),
-    });
+    // 1️⃣ Get ephemeral client secret (robust parsing so server won't crash on HTML)
+    const clientUrl = "https://api.openai.com/v1/realtime/client_secrets";
+    let keyData;
+    try {
+      const resp = await fetch(clientUrl, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({}), // GA expects empty body for client_secrets
+      });
 
-    const keyData = await resp.json();
+      const ct = (resp.headers.get("content-type") || "").toLowerCase();
+      if (!resp.ok) {
+        const text = await resp.text();
+        console.error("❌ Failed to fetch client_secrets:", resp.status, ct, text.slice(0, 1000).replace(/\n/g, " "));
+        ws.close();
+        return;
+      }
+
+      if (ct.includes("application/json")) {
+        keyData = await resp.json();
+      } else {
+        const text = await resp.text();
+        console.error("❌ client_secrets returned non-json content-type:", ct, "body-start:", text.slice(0, 1000).replace(/\n/g, " "));
+        ws.close();
+        return;
+      }
+    } catch (err) {
+      console.error("❌ Error fetching client_secrets:", err);
+      ws.close();
+      return;
+    }
+
     console.log("🔑 OpenAI client secret response:", keyData);
 
     const ephemeralKey =
@@ -129,17 +153,19 @@ export function setupRealtime(app) {
     openAIWs.on("open", () => {
       console.log("🔗 Connected to OpenAI Realtime WebSocket");
 
-      // 👇 FORCE GREETING RIGHT AWAY
+      // 👇 FORCE GREETING RIGHT AWAY (with audio requested)
       openAIWs.send(
-  JSON.stringify({
-    type: "response.create",
-    response: {
-      modalities: ["audio", "text"],   // 👈 force audio generation
-      instructions: "Hello! This is Finlumina Vox speaking instantly as the call connects.",
-    },
-  })
-);
+        JSON.stringify({
+          type: "response.create",
+          response: {
+            modalities: ["audio", "text"],
+            instructions: "Hello! This is Finlumina Vox speaking instantly as the call connects.",
+          },
+        })
+      );
+    }); // <-- properly close on("open")
 
+    // OpenAI -> server messages
     openAIWs.on("message", (msg) => {
       let event;
       try {
@@ -163,13 +189,17 @@ export function setupRealtime(app) {
           }
 
           try {
+            // OpenAI audio is PCM16 @ 24kHz (base64)
             const pcm24 = new Int16Array(Buffer.from(audioB64, "base64").buffer);
+
+            // Resample 24k -> 8k for Twilio then μ-law
             const pcm8 = resample24kTo8k(pcm24);
             const muLaw8 = pcm16ToMuLaw8(pcm8);
 
+            // Send to Twilio stream (Twilio Media Stream expects `{ event: "media", media: "<base64>" }`)
             ws.send(
               JSON.stringify({
-                event: "media", // Twilio expects this
+                event: "media",
                 media: Buffer.from(muLaw8).toString("base64"),
               })
             );
@@ -182,6 +212,8 @@ export function setupRealtime(app) {
         case "response.output_audio_transcript.delta":
           if (event.delta) {
             console.log("📝 Transcript chunk:", JSON.stringify(event.delta));
+          } else {
+            console.log("📩 OpenAI event: response.output_audio_transcript.delta (no delta)");
           }
           break;
 
@@ -214,6 +246,8 @@ export function setupRealtime(app) {
     ws.on("message", (msg) => {
       try {
         const data = JSON.parse(msg);
+
+        // keep legacy behavior: expecting Twilio media as `type: "input_audio_buffer"` (your Twilio config produced this)
         if (data.type === "input_audio_buffer" && openAIWs.readyState === 1) {
           const buffer8k = new Int16Array(Buffer.from(data.audio, "base64").buffer);
           const buffer24k = resampleTo24k(buffer8k);
@@ -226,6 +260,33 @@ export function setupRealtime(app) {
               audio: Buffer.from(buffer24k).toString("base64"),
             })
           );
+        }
+
+        // If Twilio uses `event: "media"` messages instead, handle that too:
+        if (data.event === "media" && data.media && openAIWs.readyState === 1) {
+          const buffer8k = new Int16Array(Buffer.from(data.media, "base64").buffer);
+          const buffer24k = resampleTo24k(buffer8k);
+
+          console.log(`🎙️ Forwarding media (event=media): ${buffer8k.length} → ${buffer24k.length}`);
+
+          openAIWs.send(
+            JSON.stringify({
+              type: "input_audio_buffer",
+              audio: Buffer.from(buffer24k).toString("base64"),
+            })
+          );
+        }
+
+        // handle Twilio marks / stops if present
+        if (data.event === "mark" && data.mark === "end" && openAIWs.readyState === 1) {
+          // let OpenAI know chunks are complete (optional)
+          try {
+            openAIWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+            // Optionally create response if you want OpenAI to respond automatically after Twilio stop
+            // openAIWs.send(JSON.stringify({ type: "response.create" }));
+          } catch (err) {
+            console.error("❌ Error sending commit/create to OpenAI:", err);
+          }
         }
       } catch (err) {
         console.error("❌ Error parsing Twilio message:", err.message);
