@@ -37,25 +37,27 @@ export function setupRealtime(app) {
   app.ws("/realtime", async (ws) => {
     console.log("✅ Twilio WebSocket connected → starting realtime conversation");
 
-    // 1️⃣ Get ephemeral client secret
+    // 1️⃣ Get ephemeral client secret (GA endpoint - body intentionally empty)
     const resp = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        model: "gpt-4o-realtime-preview",
-        voice: "alloy",
-        modalities: ["audio", "text"],
-      }),
+      body: JSON.stringify({}), // must be empty for GA client_secrets
     });
 
     const keyData = await resp.json();
     console.log("🔑 OpenAI client secret response:", keyData);
 
-    // ✅ FIX: Use client_secret.value
-    const ephemeralKey = keyData.client_secret?.value;
+    // ====== Accept multiple response shapes ==========
+    const ephemeralKey =
+      keyData?.client_secret?.value ||
+      keyData?.value ||
+      keyData?.session?.client_secret?.value ||
+      keyData?.session?.value;
+    // ==================================================
+
     if (!ephemeralKey) {
       console.error("❌ No ephemeral key found, closing WebSocket");
       ws.close();
@@ -71,7 +73,7 @@ export function setupRealtime(app) {
     openAIWs.on("open", () => {
       console.log("🔗 Connected to OpenAI Realtime WebSocket");
 
-      // 👉 Force model to speak something back
+      // 👇 Force model to speak immediately
       openAIWs.send(
         JSON.stringify({
           type: "response.create",
@@ -98,7 +100,7 @@ export function setupRealtime(app) {
       }
 
       switch (event.type) {
-        case "response.output_audio.delta":
+        case "response.output_audio.delta": {
           const pcm16 = new Int16Array(Buffer.from(event.audio, "base64").buffer);
           const muLaw8 = pcm16ToMuLaw8(pcm16);
           ws.send(
@@ -108,6 +110,7 @@ export function setupRealtime(app) {
             })
           );
           break;
+        }
 
         case "response.output_text.delta":
           console.log("💬 Partial text:", event.delta);
