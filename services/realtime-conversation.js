@@ -9,15 +9,13 @@ function resampleTo24k(buffer8k) {
   if (inLen === 0) return new Int16Array(0);
   const outLen = Math.floor(inLen * 24 / 8);
   const outSamples = new Int16Array(outLen);
-
   for (let i = 0; i < outLen; i++) {
     const srcPos = (i * (inLen - 1)) / Math.max(outLen - 1, 1);
     const idx = Math.floor(srcPos);
     const frac = srcPos - idx;
     const s1 = inSamples[idx] || 0;
     const s2 = inSamples[Math.min(idx + 1, inLen - 1)] || 0;
-    const interpolated = (1 - frac) * s1 + frac * s2;
-    outSamples[i] = Math.max(-32768, Math.min(32767, Math.round(interpolated)));
+    outSamples[i] = Math.max(-32768, Math.min(32767, Math.round((1 - frac) * s1 + frac * s2)));
   }
   return outSamples;
 }
@@ -29,15 +27,13 @@ function resample24kTo8k(buffer24k) {
   if (inLen === 0) return new Int16Array(0);
   const outLen = Math.floor(inLen * 8 / 24);
   const outSamples = new Int16Array(outLen);
-
   for (let i = 0; i < outLen; i++) {
     const srcPos = (i * (inLen - 1)) / Math.max(outLen - 1, 1);
     const idx = Math.floor(srcPos);
     const frac = srcPos - idx;
     const s1 = inSamples[idx] || 0;
     const s2 = inSamples[Math.min(idx + 1, inLen - 1)] || 0;
-    const interpolated = (1 - frac) * s1 + frac * s2;
-    outSamples[i] = Math.max(-32768, Math.min(32767, Math.round(interpolated)));
+    outSamples[i] = Math.max(-32768, Math.min(32767, Math.round((1 - frac) * s1 + frac * s2)));
   }
   return outSamples;
 }
@@ -67,9 +63,7 @@ function extractAudioBase64(event) {
   if (event.delta?.audio) return event.delta.audio;
   if (event.output_audio) return event.output_audio;
   if (Array.isArray(event.content)) {
-    for (const c of event.content) {
-      if (c?.audio) return c.audio;
-    }
+    for (const c of event.content) if (c?.audio) return c.audio;
   }
   return null;
 }
@@ -81,27 +75,14 @@ export function setupRealtime(app) {
     // 1️⃣ Get ephemeral client secret
     const resp = await fetch("https://api.openai.com/v1/realtime/client_secrets", {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        "Content-Type": "application/json",
-      },
+      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({}),
     });
-
     const keyData = await resp.json();
     console.log("🔑 OpenAI ephemeral key received");
 
-    const ephemeralKey =
-      keyData?.client_secret?.value ||
-      keyData?.value ||
-      keyData?.session?.client_secret?.value ||
-      keyData?.session?.value;
-
-    if (!ephemeralKey) {
-      console.error("❌ No ephemeral key found, closing WebSocket");
-      ws.close();
-      return;
-    }
+    const ephemeralKey = keyData?.client_secret?.value || keyData?.value || keyData?.session?.client_secret?.value || keyData?.session?.value;
+    if (!ephemeralKey) { ws.close(); return; }
 
     // 2️⃣ Connect to OpenAI Realtime WS
     const openAIWs = new WebSocket(
@@ -109,33 +90,25 @@ export function setupRealtime(app) {
       { headers: { Authorization: `Bearer ${ephemeralKey}` } }
     );
 
+    // Buffers for batching micro-chunks
+    let audioBatch = [];
+    let batchCounter = 0;
+
     openAIWs.on("open", () => {
       console.log("🔗 Connected to OpenAI Realtime WebSocket");
 
-      // Force greeting instantly
-      openAIWs.send(
-        JSON.stringify({
-          type: "response.create",
-          response: {
-            instructions: "Hello! This is Finlumina Vox speaking instantly as the call connects.",
-          },
-        })
-      );
+      // Instant greeting
+      openAIWs.send(JSON.stringify({
+        type: "response.create",
+        response: { instructions: "Hello! This is Finlumina Vox speaking instantly as the call connects." },
+      }));
     });
 
-    // Handle OpenAI events
     openAIWs.on("message", (msg) => {
       let event;
-      try {
-        event = JSON.parse(msg.toString());
-      } catch {
-        return;
-      }
+      try { event = JSON.parse(msg.toString()); } catch { return; }
 
-      if (event.type === "error") {
-        console.error("❌ OpenAI error:", event.error?.message || "Unknown error");
-        return;
-      }
+      if (event.type === "error") { console.error("❌ OpenAI error:", event.error?.message); return; }
 
       switch (event.type) {
         case "response.output_audio.delta": {
@@ -143,81 +116,48 @@ export function setupRealtime(app) {
           if (!audioB64) break;
 
           try {
-            const pcm24 = new Int16Array(Buffer.from(audioB64, "base64").buffer);
-            const pcm8 = resample24kTo8k(pcm24);
-            const muLaw8 = pcm16ToMuLaw8(pcm8);
+            audioBatch.push(audioB64);
 
-            ws.send(
-              JSON.stringify({
-                event: "media",
-                media: { payload: Buffer.from(muLaw8).toString("base64") },
-              })
-            );
-          } catch {
-            console.error("❌ Error processing audio chunk");
-          }
+            if (audioBatch.length >= 80) {
+              // Merge batch and send
+              const pcm24 = new Int16Array(Buffer.from(audioBatch.join(""), "base64").buffer);
+              const pcm8 = resample24kTo8k(pcm24);
+              const muLaw8 = pcm16ToMuLaw8(pcm8);
+
+              ws.send(JSON.stringify({ event: "media", media: { payload: Buffer.from(muLaw8).toString("base64") } }));
+              batchCounter++;
+              console.log(`🎙️ Forwarded audio batch #${batchCounter}`);
+              audioBatch = [];
+            }
+          } catch (err) { console.error("❌ Error processing audio batch:", err); }
           break;
         }
 
-        case "response.output_text.delta":
-          // Non-spammy partial text log
-          console.log("💬 OpenAI speaking…");
-          break;
-
-        case "response.output_text.completed":
-          console.log("💬 OpenAI finished speaking");
-          break;
-
-        case "response.done":
-          console.log("📩 OpenAI response done");
-          break;
-
-        default:
-          break;
+        case "response.output_text.delta": console.log("💬 Partial text:", event.delta); break;
+        case "response.output_text.completed": console.log("💬 Final text:", event.text); break;
+        case "response.done": console.log("📩 OpenAI response done"); break;
+        default: break;
       }
     });
 
-    openAIWs.on("error", (err) => {
-      console.error("❌ OpenAI WebSocket transport error:", err.message);
-    });
+    openAIWs.on("error", (err) => { console.error("📩 OpenAI WebSocket transport error:", err); });
 
     // 3️⃣ Twilio → OpenAI audio
-    let forwardedChunkCount = 0;
     ws.on("message", (msg) => {
       try {
-        const data = typeof msg === "string" ? JSON.parse(msg) : msg;
-
+        const data = JSON.parse(msg.toString());
         if (data.event === "media" && data.media?.payload && openAIWs.readyState === 1) {
           const buffer8k = Buffer.from(data.media.payload, "base64");
-          const pcm8 = new Int16Array(buffer8k.buffer, buffer8k.byteOffset, buffer8k.length / 2);
-          const buffer24k = resampleTo24k(pcm8);
-
-          forwardedChunkCount++;
-          if (forwardedChunkCount % 10 === 0) {
-            console.log(`🎙️ Forwarded audio chunk #${forwardedChunkCount}`);
-          }
-
-          openAIWs.send(
-            JSON.stringify({
-              type: "input_audio_buffer.append",
-              audio: Buffer.from(buffer24k.buffer).toString("base64"),
-            })
-          );
+          const buffer24k = resampleTo24k(new Int16Array(buffer8k.buffer, buffer8k.byteOffset, buffer8k.length / 2));
+          openAIWs.send(JSON.stringify({ type: "input_audio_buffer.append", audio: Buffer.from(buffer24k.buffer).toString("base64") }));
         }
-
         if (data.event === "stop") {
           openAIWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
           openAIWs.send(JSON.stringify({ type: "response.create" }));
-          forwardedChunkCount = 0;
         }
-      } catch {
-        console.error("❌ Error parsing Twilio audio message");
-      }
+      } catch (err) { console.error("❌ Error parsing Twilio message:", err.message); }
     });
 
-    ws.on("close", () => {
-      console.log("⚠️ Twilio WebSocket disconnected");
-      if (openAIWs) openAIWs.close();
-    });
+    ws.on("close", () => { console.log("⚠️ Twilio WebSocket disconnected"); if (openAIWs) openAIWs.close(); });
   });
 }
