@@ -2,50 +2,19 @@
 import fetch from "node-fetch";
 import WebSocket from "ws";
 
-// Resample 8k → 24k PCM16 (Twilio -> OpenAI expects 24k)
-function resampleTo24k(buffer8k) {
-  const inSamples = new Int16Array(buffer8k.buffer);
-  const inLen = inSamples.length;
-  if (inLen === 0) return new Int16Array(0);
-  const outLen = Math.floor(inLen * 24 / 8); // usually 3x
-  const outSamples = new Int16Array(outLen);
-
-  for (let i = 0; i < outLen; i++) {
-    // map output sample to fractional input index
-    const srcPos = (i * (inLen - 1)) / Math.max(outLen - 1, 1);
-    const idx = Math.floor(srcPos);
-    const frac = srcPos - idx;
-    const s1 = inSamples[idx] || 0;
-    const s2 = inSamples[Math.min(idx + 1, inLen - 1)] || 0;
-    // linear interpolation and clamp
-    const interpolated = (1 - frac) * s1 + frac * s2;
-    outSamples[i] = Math.max(-32768, Math.min(32767, Math.round(interpolated)));
+// Resample 16k → 24k PCM16 (Twilio/WebSocket expects 24k)
+function resampleTo24k(buffer16k) {
+  const inSamples = new Int16Array(buffer16k.buffer);
+  const outLength = Math.floor(inSamples.length * 24 / 16);
+  const outSamples = new Int16Array(outLength);
+  for (let i = 0; i < outLength; i++) {
+    const idx = Math.floor(i * 16 / 24);
+    outSamples[i] = inSamples[idx];
   }
   return outSamples;
 }
 
-// Resample 24k → 8k PCM16 (OpenAI -> Twilio expects 8k μ-law)
-function resample24kTo8k(buffer24k) {
-  const inSamples = new Int16Array(buffer24k.buffer);
-  const inLen = inSamples.length;
-  if (inLen === 0) return new Int16Array(0);
-  const outLen = Math.floor(inLen * 8 / 24); // usually 1/3
-  const outSamples = new Int16Array(outLen);
-
-  for (let i = 0; i < outLen; i++) {
-    // map output sample to fractional input index
-    const srcPos = (i * (inLen - 1)) / Math.max(outLen - 1, 1);
-    const idx = Math.floor(srcPos);
-    const frac = srcPos - idx;
-    const s1 = inSamples[idx] || 0;
-    const s2 = inSamples[Math.min(idx + 1, inLen - 1)] || 0;
-    const interpolated = (1 - frac) * s1 + frac * s2;
-    outSamples[i] = Math.max(-32768, Math.min(32767, Math.round(interpolated)));
-  }
-  return outSamples;
-}
-
-// Convert PCM16 → μ-law 8-bit (Twilio expects this for streaming)
+// Convert PCM16 → mu-law 8-bit (Twilio expects this for streaming)
 function pcm16ToMuLaw8(pcm16) {
   const MULAW_MAX = 0x1fff;
   const MULAW_BIAS = 33;
@@ -57,12 +26,7 @@ function pcm16ToMuLaw8(pcm16) {
     if (sample > MULAW_MAX) sample = MULAW_MAX;
     sample += MULAW_BIAS;
     let exponent = 7;
-    for (
-      let expMask = 0x4000;
-      (sample & expMask) === 0 && exponent > 0;
-      expMask >>= 1
-    )
-      exponent--;
+    for (let expMask = 0x4000; (sample & expMask) === 0 && exponent > 0; expMask >>= 1) exponent--;
     let mantissa = (sample >> (exponent + 3)) & 0x0f;
     output[i] = ~(sign | (exponent << 4) | mantissa);
   }
@@ -100,7 +64,7 @@ export function setupRealtime(app) {
       return;
     }
 
-    // 2️⃣ Connect to OpenAI Realtime WS
+    // 2️⃣ Connect to OpenAI Realtime WS (model & voice in the URL)
     const openAIWs = new WebSocket(
       "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview&voice=alloy",
       { headers: { Authorization: `Bearer ${ephemeralKey}` } }
@@ -109,16 +73,28 @@ export function setupRealtime(app) {
     openAIWs.on("open", () => {
       console.log("🔗 Connected to OpenAI Realtime WebSocket");
 
-      // Force model to speak immediately so we verify audio path
+      // ---- MINIMAL FIX: set session modalities first, then create a response ----
+      // 1) Tell the session we want both audio + text responses
+      openAIWs.send(
+        JSON.stringify({
+          type: "session.update",
+          session: {
+            modalities: ["audio", "text"],
+          },
+        })
+      );
+
+      // 2) Create a response (no `response.modalities` here — session controls modalities)
       openAIWs.send(
         JSON.stringify({
           type: "response.create",
           response: {
-            modalities: ["audio", "text"],
+            // DO NOT include `modalities` here to avoid the 'unknown_parameter' error
             instructions: "Hello! This is Finlumina Vox connected successfully.",
           },
         })
       );
+      // --------------------------------------------------------------------------
     });
 
     openAIWs.on("message", (msg) => {
@@ -137,10 +113,8 @@ export function setupRealtime(app) {
 
       switch (event.type) {
         case "response.output_audio.delta": {
-          // OpenAI outputs PCM16 at 24kHz — resample to 8kHz for Twilio then μ-law
-          const pcm24 = new Int16Array(Buffer.from(event.audio, "base64").buffer);
-          const pcm8 = resample24kTo8k(pcm24);
-          const muLaw8 = pcm16ToMuLaw8(pcm8);
+          const pcm16 = new Int16Array(Buffer.from(event.audio, "base64").buffer);
+          const muLaw8 = pcm16ToMuLaw8(pcm16);
           ws.send(
             JSON.stringify({
               type: "media",
@@ -172,11 +146,9 @@ export function setupRealtime(app) {
       try {
         const data = JSON.parse(msg);
         if (data.type === "input_audio_buffer" && openAIWs.readyState === 1) {
-          // Twilio audio is μ-law by default. The Twilio Media Stream gives you base64 PCM16 LE at 8000Hz
-          // (your code already created Int16Array from data.audio). Treat that as 8k input:
-          const buffer8k = new Int16Array(Buffer.from(data.audio, "base64").buffer);
-          const buffer24k = resampleTo24k(buffer8k);
-          console.log(`🎙️ Forwarding audio: ${buffer8k.length} → ${buffer24k.length}`);
+          const buffer16k = new Int16Array(Buffer.from(data.audio, "base64").buffer);
+          const buffer24k = resampleTo24k(buffer16k);
+          console.log(`🎙️ Forwarding audio: ${buffer16k.length} → ${buffer24k.length}`);
           openAIWs.send(
             JSON.stringify({
               type: "input_audio_buffer",
