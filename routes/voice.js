@@ -11,22 +11,19 @@ router.post("/incoming", (req, res) => {
 
     const twiml = new twilio.twiml.VoiceResponse();
 
-    // Optional: short greeting
-    twiml.say({ voice: "Google.en-US-Wavenet-D" }, "Testing Finlumina Vox.");
-
-    // Build the realtime WebSocket URL
+    // Build the realtime WebSocket URL (Render provides your public host)
     const wsUrl = `wss://${process.env.RENDER_EXTERNAL_HOSTNAME}/realtime`;
     console.log(`🔗 Sending Twilio Stream URL: ${wsUrl}`);
 
-    // Start realtime stream
+    // Start realtime stream — no <Say>, only stream
     twiml.connect().stream({ url: wsUrl });
 
-    // ✅ Always send back TwiML only
+    // ✅ Always return TwiML
     res.type("text/xml").send(twiml.toString());
   } catch (err) {
     console.error("❌ Error in /voice/incoming:", err);
 
-    // Fail-safe: return empty <Response/> so Twilio never gets junk
+    // Fail-safe: return empty <Response/> so Twilio doesn't error out
     res.type("text/xml").send("<Response/>");
   }
 });
