@@ -6,10 +6,9 @@ import WebSocket from "ws";
 function resampleTo24k(buffer8k) {
   const inSamples = new Int16Array(buffer8k.buffer, buffer8k.byteOffset, buffer8k.length / 2);
   const inLen = inSamples.length;
-  if (!inLen) return new Int16Array(0);
+  if (inLen === 0) return new Int16Array(0);
   const outLen = Math.floor(inLen * 24 / 8);
   const outSamples = new Int16Array(outLen);
-
   for (let i = 0; i < outLen; i++) {
     const srcPos = (i * (inLen - 1)) / Math.max(outLen - 1, 1);
     const idx = Math.floor(srcPos);
@@ -18,7 +17,6 @@ function resampleTo24k(buffer8k) {
     const s2 = inSamples[Math.min(idx + 1, inLen - 1)] || 0;
     outSamples[i] = Math.max(-32768, Math.min(32767, Math.round((1 - frac) * s1 + frac * s2)));
   }
-
   return outSamples;
 }
 
@@ -26,10 +24,9 @@ function resampleTo24k(buffer8k) {
 function resample24kTo8k(buffer24k) {
   const inSamples = new Int16Array(buffer24k.buffer, buffer24k.byteOffset, buffer24k.length / 2);
   const inLen = inSamples.length;
-  if (!inLen) return new Int16Array(0);
+  if (inLen === 0) return new Int16Array(0);
   const outLen = Math.floor(inLen * 8 / 24);
   const outSamples = new Int16Array(outLen);
-
   for (let i = 0; i < outLen; i++) {
     const srcPos = (i * (inLen - 1)) / Math.max(outLen - 1, 1);
     const idx = Math.floor(srcPos);
@@ -38,7 +35,6 @@ function resample24kTo8k(buffer24k) {
     const s2 = inSamples[Math.min(idx + 1, inLen - 1)] || 0;
     outSamples[i] = Math.max(-32768, Math.min(32767, Math.round((1 - frac) * s1 + frac * s2)));
   }
-
   return outSamples;
 }
 
@@ -47,20 +43,17 @@ function pcm16ToMuLaw8(pcm16) {
   const MULAW_MAX = 0x1fff;
   const MULAW_BIAS = 33;
   const output = new Uint8Array(pcm16.length);
-
   for (let i = 0; i < pcm16.length; i++) {
     let sample = pcm16[i];
     let sign = (sample >> 8) & 0x80;
-    if (sign) sample = -sample;
+    if (sign !== 0) sample = -sample;
     if (sample > MULAW_MAX) sample = MULAW_MAX;
     sample += MULAW_BIAS;
-
     let exponent = 7;
     for (let expMask = 0x4000; (sample & expMask) === 0 && exponent > 0; expMask >>= 1) exponent--;
     let mantissa = (sample >> (exponent + 3)) & 0x0f;
     output[i] = ~(sign | (exponent << 4) | mantissa);
   }
-
   return output;
 }
 
@@ -100,11 +93,12 @@ export function setupRealtime(app) {
     // Buffers for batching micro-chunks
     let audioBatch = [];
     let batchCounter = 0;
+    let currentResponseText = "";
 
     openAIWs.on("open", () => {
       console.log("🔗 Connected to OpenAI Realtime WebSocket");
 
-      // Instant greeting without user speaking first
+      // Instant greeting
       openAIWs.send(JSON.stringify({
         type: "response.create",
         response: { instructions: "Hello! This is Finlumina Vox speaking instantly as the call connects." },
@@ -115,10 +109,7 @@ export function setupRealtime(app) {
       let event;
       try { event = JSON.parse(msg.toString()); } catch { return; }
 
-      if (event.type === "error") {
-        console.error("❌ OpenAI error:", event.error?.message);
-        return;
-      }
+      if (event.type === "error") { console.error("❌ OpenAI error:", event.error?.message); return; }
 
       switch (event.type) {
         case "response.output_audio.delta": {
@@ -143,17 +134,14 @@ export function setupRealtime(app) {
         }
 
         case "response.output_text.delta":
-          console.log("💬 Partial text:", event.delta);
+          currentResponseText += event.delta?.content || "";
+          console.log("💬 Partial text:", event.delta?.content);
           break;
 
         case "response.output_text.completed":
-          console.log("💬 Final text:", event.text);
-          break;
-
-        case "response.done":
-          // Log final text if available
-          if (event.response?.text) console.log("📩 OpenAI response done:", event.response.text);
-          else console.log("📩 OpenAI response done");
+          currentResponseText += event.text || "";
+          console.log("💬 Final text:", currentResponseText);
+          currentResponseText = ""; // reset after logging
           break;
 
         default: break;
@@ -172,12 +160,17 @@ export function setupRealtime(app) {
           openAIWs.send(JSON.stringify({ type: "input_audio_buffer.append", audio: Buffer.from(buffer24k.buffer).toString("base64") }));
         }
         if (data.event === "stop") {
+          // Commit any remaining audio
           openAIWs.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+          // Create a response after committing audio
           openAIWs.send(JSON.stringify({ type: "response.create" }));
         }
       } catch (err) { console.error("❌ Error parsing Twilio message:", err.message); }
     });
 
-    ws.on("close", () => { console.log("⚠️ Twilio WebSocket disconnected"); if (openAIWs) openAIWs.close(); });
+    ws.on("close", () => {
+      console.log("⚠️ Twilio WebSocket disconnected");
+      if (openAIWs) openAIWs.close();
+    });
   });
 }
